@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Sensitive Data
+credentials.json
+
+# Data files
+*.xlsx
+*.csv
+
+# OS
+.DS_Store
+Thumbs.db
