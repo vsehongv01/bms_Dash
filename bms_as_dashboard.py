@@ -325,6 +325,10 @@ def main():
     if st.session_state['current_page'] > total_pages: st.session_state['current_page'] = total_pages
     current_page = st.session_state['current_page']
     
+    # [수정] 팝업 체크박스 초기화 이슈 해결을 위한 Dynamic Key 적용
+    if 'reset_counter' not in st.session_state:
+        st.session_state['reset_counter'] = 0
+
     # 뷰 컬럼 구성 - [수정] 팝업 컬럼 복구
     view_cols = ['key_id', 'AS 주문번호', '접수일', '구분', 'AS 분류', '원주문번호', 'AS 사유', '고객명']
     final_view = display_df[[c for c in view_cols if c in display_df.columns]].copy()
@@ -334,7 +338,7 @@ def main():
     start_idx = (current_page - 1) * ITEMS_PER_PAGE
     paged_view = final_view.iloc[start_idx:start_idx + ITEMS_PER_PAGE].copy()
 
-    # [수정] st.data_editor로 복귀 (on_select 제거)
+    # [수정] st.data_editor로 복귀 (on_select 제거) & key에 counter 추가
     edited_df = st.data_editor(
         paged_view,
         column_config={
@@ -350,7 +354,8 @@ def main():
             "고객명": st.column_config.TextColumn("고객명", width="medium"),
         },
         column_order=['확인', 'AS 주문번호', '접수일', '팝업', '구분', 'AS 분류', '원주문번호', 'AS 사유', '고객명'],
-        height=750, hide_index=True, use_container_width=True, key=f"as_table_page_{current_page}"
+        height=750, hide_index=True, use_container_width=True, 
+        key=f"as_table_page_{current_page}_{st.session_state['reset_counter']}" # <--- Key 변경으로 강제 리셋
     )
 
     # 페이지네이션
@@ -390,7 +395,8 @@ def main():
             else:
                 st.error("자동화 모듈 없음")
         
-        # 체크박스 리셋을 위한 리런
+        # 체크박스 리셋을 위한 리런 (Counter 증가시켜서 Key 변경)
+        st.session_state['reset_counter'] += 1
         rerun_needed = True
 
     if rerun_needed:
