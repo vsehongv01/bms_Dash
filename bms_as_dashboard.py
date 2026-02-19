@@ -325,32 +325,32 @@ def main():
     if st.session_state['current_page'] > total_pages: st.session_state['current_page'] = total_pages
     current_page = st.session_state['current_page']
     
-    # 뷰 컬럼 구성 - [수정] 팝업 컬럼 제거
+    # 뷰 컬럼 구성 - [수정] 팝업 컬럼 복구
     view_cols = ['key_id', 'AS 주문번호', '접수일', '구분', 'AS 분류', '원주문번호', 'AS 사유', '고객명']
     final_view = display_df[[c for c in view_cols if c in display_df.columns]].copy()
     final_view.insert(0, "확인", False) # 완료 체크
-    # final_view.insert(3, "팝업", False) # [삭제] 자동화 체크
+    final_view.insert(3, "팝업", False) # [복구] 자동화 체크
 
     start_idx = (current_page - 1) * ITEMS_PER_PAGE
     paged_view = final_view.iloc[start_idx:start_idx + ITEMS_PER_PAGE].copy()
 
-    # [수정] on_select 활성화 및 selection_mode 설정
-    event = st.dataframe(
+    # [수정] st.data_editor로 복귀 (on_select 제거)
+    edited_df = st.data_editor(
         paged_view,
         column_config={
             "확인": st.column_config.CheckboxColumn("완료", width="small"),
             "key_id": None,
             "AS 주문번호": st.column_config.TextColumn("AS 번호", width="medium"),
             "접수일": st.column_config.TextColumn("접수일", width="small"),
+            "팝업": st.column_config.CheckboxColumn("BMS 조회", width="small", help="체크 시 자동 조회"), # [복구]
             "구분": st.column_config.TextColumn("구분", width="small"),
             "AS 분류": st.column_config.TextColumn("AS 상세 분류", width="medium"),
             "원주문번호": st.column_config.TextColumn("원주문번호", width="medium"),
             "AS 사유": st.column_config.TextColumn("AS/피팅 사유", width="large"),
             "고객명": st.column_config.TextColumn("고객명", width="medium"),
         },
-        column_order=['확인', 'AS 주문번호', '접수일', '구분', 'AS 분류', '원주문번호', 'AS 사유', '고객명'],
-        height=750, hide_index=True, use_container_width=True, key=f"as_table_page_{current_page}",
-        on_select="rerun", selection_mode="single-row"
+        column_order=['확인', 'AS 주문번호', '접수일', '팝업', '구분', 'AS 분류', '원주문번호', 'AS 사유', '고객명'],
+        height=750, hide_index=True, use_container_width=True, key=f"as_table_page_{current_page}"
     )
 
     # 페이지네이션
@@ -363,54 +363,17 @@ def main():
 
     # --- [로직 처리] ---
     rerun_needed = False
-
-    # 1. 완료 처리 (st.data_editor가 아니라 st.dataframe selection event라 방식 변경 필요)
-    # st.data_editor를 쓰면 checkbox 수정과 row selection을 동시에 하기가 까다로움 (on_change vs on_select)
-    # Streamlit 1.35+ 에서는 st.dataframe의 on_select가 지원됨.
-    # 하지만 '완료' 체크박스는 상호작용이 필요하므로 st.data_editor가 필수.
-    # st.data_editor도 on_select 지원함.
-    
-    # 위 코드를 st.data_editor로 다시 변경하고 on_select 추가
-    
-    # [재수정] st.data_editor 사용
-    edited_df = st.data_editor(
-        paged_view,
-        column_config={
-            "확인": st.column_config.CheckboxColumn("완료", width="small"),
-            "key_id": None,
-            "AS 주문번호": st.column_config.TextColumn("AS 번호", width="medium"),
-            "접수일": st.column_config.TextColumn("접수일", width="small"),
-            "구분": st.column_config.TextColumn("구분", width="small"),
-            "AS 분류": st.column_config.TextColumn("AS 상세 분류", width="medium"),
-            "원주문번호": st.column_config.TextColumn("원주문번호", width="medium"),
-            "AS 사유": st.column_config.TextColumn("AS/피팅 사유", width="large"),
-            "고객명": st.column_config.TextColumn("고객명", width="medium"),
-        },
-        column_order=['확인', 'AS 주문번호', '접수일', '구분', 'AS 분류', '원주문번호', 'AS 사유', '고객명'],
-        height=750, hide_index=True, use_container_width=True, key=f"as_table_edit_{current_page}",
-        on_select="rerun", selection_mode="single-row"
-    )
     
     # 1. 완료 처리
     if not edited_df[edited_df["확인"] == True].empty:
-        # 기존 로직: 체크된 것들 hidden_ids에 추가
-        # 주의: data_editor에서 체크박스를 누르면 리런되면서 적용됨.
-        # 문제는 체크박스 누른게 '수정'으로 간주되어 edited_df에 반영됨.
         for jids in edited_df[edited_df["확인"] == True]['key_id']:
              for rid in str(jids).split(','): st.session_state['hidden_ids'].add(rid.strip())
         rerun_needed = True
 
-    # 2. 팝업 자동화 처리 (Row Selection)
-    # st.data_editor의 selection state 확인
-    # key가 as_table_edit_{current_page} 이므로 session_state에서 확인
-    selection_state = st.session_state.get(f"as_table_edit_{current_page}", {}).get("selection", {})
-    if selection_state and selection_state.get("rows"):
-        selected_idx = selection_state["rows"][0] # single-row라서 0번째
-        
-        # paged_view의 해당 인덱스 데이터 가져오기
-        # 주의: paged_view는 RangeIndex가 아닐 수 있으므로 iloc 안전하게 사용
-        try:
-            row = paged_view.iloc[selected_idx]
+    # 2. 팝업 자동화 처리 (Checkbox Logic 복구)
+    if not edited_df[edited_df["팝업"] == True].empty:
+        target_rows = edited_df[edited_df["팝업"] == True]
+        for _, row in target_rows.iterrows():
             code_val = row.get('AS 주문번호', '')
             cust_name = row.get('고객명', '')
             
@@ -426,9 +389,10 @@ def main():
                     st.error("팝업 열기 실패")
             else:
                 st.error("자동화 모듈 없음")
-        except Exception as e:
-            st.warning(f"선택 오류: {e}")
-            
+        
+        # 체크박스 리셋을 위한 리런
+        rerun_needed = True
+
     if rerun_needed:
         st.rerun()
 
