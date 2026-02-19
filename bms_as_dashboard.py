@@ -397,12 +397,11 @@ def main():
         st.rerun()
 
     # ---------------------------------------------------------
-    # [2. 차트 영역 (하단 복구 & 분리)]
+    # [2. 차트 영역 (하단 복구 & 분리 - 3개 차트)]
     # ---------------------------------------------------------
     st.markdown("---")
     st.subheader("📊 월별 AS/피팅 통계")
     
-    # 미확인 건수가 아닌 전체 데이터(raw_df) 기준으로 통계를 보여주는 것이 맞음
     if not raw_df.empty and 'AS 분류' in raw_df.columns:
         stats_df = raw_df.copy()
         stats_df['Month'] = pd.to_datetime(stats_df['접수일'], errors='coerce').dt.strftime('%Y-%m')
@@ -415,9 +414,11 @@ def main():
         with col_sel: selected_month = st.selectbox("📅 조회할 월", month_list)
 
         m_df = stats_df[stats_df['Month'] == selected_month].copy()
-        col_lens, col_frame = st.columns(2)
         
-        detail_data = pd.DataFrame(); detail_title = ""
+        # [수정] 3개 컬럼으로 분리
+        col_lens, col_frame, col_fitting = st.columns(3)
+        
+        detail_data = pd.DataFrame(); detail_titles = []
 
         # [차트 함수] 반복되는 차트 생성 로직 함수화
         def create_pie_chart(data, title, key_name):
@@ -429,7 +430,6 @@ def main():
             counts.columns = ['유형', '건수']
             counts['Label'] = counts['유형'] + " (" + counts['건수'].astype(str) + ")"
             
-            # [핵심] Altair Selection 정의
             selection = alt.selection_point(fields=['유형'], name=key_name + "_select")
             
             base = alt.Chart(counts).encode(theta=alt.Theta("건수", stack=True))
@@ -437,9 +437,8 @@ def main():
                 color=alt.Color("Label", legend=alt.Legend(title="분류 (건수)")),
                 order=alt.Order("건수", sort="descending"),
                 tooltip=["유형", "건수"],
-                # 선택 시 투명도 조절로 시각적 피드백 제공
                 opacity=alt.condition(selection, alt.value(1), alt.value(0.3))
-            ).add_params(selection) # <--- 중요: 차트에 파라미터 추가
+            ).add_params(selection)
             
             return st.altair_chart(pie, use_container_width=True, on_select="rerun", key=key_name)
 
@@ -448,30 +447,42 @@ def main():
             st.markdown("#### 🔘 렌즈 AS")
             lens_event = create_pie_chart(m_df[m_df['구분'] == '렌즈 AS'], "렌즈 AS", "chart_lens")
             if lens_event and lens_event.selection:
-                # Selection 이름으로 데이터 추출 (chart_lens_select)
                 sel_data = lens_event.selection.get("chart_lens_select", [])
                 if sel_data:
                     types = [item['유형'] for item in sel_data]
-                    detail_data = m_df[(m_df['구분'] == '렌즈 AS') & (m_df['FirstClass'].isin(types))]
-                    detail_title = f"렌즈 AS - {', '.join(types)}"
+                    subset = m_df[(m_df['구분'] == '렌즈 AS') & (m_df['FirstClass'].isin(types))]
+                    detail_data = pd.concat([detail_data, subset]) if not detail_data.empty else subset
+                    detail_titles.append(f"렌즈: {', '.join(types)}")
 
         # 2. 테 차트
         with col_frame:
-            st.markdown("#### 👓 테 AS & 피팅")
-            frame_event = create_pie_chart(m_df[m_df['구분'].isin(['테 AS', '피팅'])], "테 AS", "chart_frame")
+            st.markdown("#### 👓 테 AS")
+            frame_event = create_pie_chart(m_df[m_df['구분'] == '테 AS'], "테 AS", "chart_frame")
             if frame_event and frame_event.selection:
                 sel_data = frame_event.selection.get("chart_frame_select", [])
                 if sel_data:
                     types = [item['유형'] for item in sel_data]
-                    # 기존 detail_data가 있으면 합침 (렌즈+테 동시 선택 시)
-                    new_detail = m_df[(m_df['구분'].isin(['테 AS', '피팅'])) & (m_df['FirstClass'].isin(types))]
-                    detail_data = pd.concat([detail_data, new_detail]) if not detail_data.empty else new_detail
-                    detail_title = f"{detail_title} / 테 AS - {', '.join(types)}" if detail_title else f"테 AS - {', '.join(types)}"
+                    subset = m_df[(m_df['구분'] == '테 AS') & (m_df['FirstClass'].isin(types))]
+                    detail_data = pd.concat([detail_data, subset]) if not detail_data.empty else subset
+                    detail_titles.append(f"테: {', '.join(types)}")
+
+        # 3. 피팅 차트
+        with col_fitting:
+            st.markdown("#### 🛠️ 피팅")
+            fitting_event = create_pie_chart(m_df[m_df['구분'] == '피팅'], "피팅", "chart_fitting")
+            if fitting_event and fitting_event.selection:
+                sel_data = fitting_event.selection.get("chart_fitting_select", [])
+                if sel_data:
+                    types = [item['유형'] for item in sel_data]
+                    subset = m_df[(m_df['구분'] == '피팅') & (m_df['FirstClass'].isin(types))]
+                    detail_data = pd.concat([detail_data, subset]) if not detail_data.empty else subset
+                    detail_titles.append(f"피팅: {', '.join(types)}")
 
         # 상세 내역 표시
         if not detail_data.empty:
             st.markdown("---")
-            with st.expander(f"🔍 선택항목 상세 내역: {detail_title}", expanded=True):
+            title_str = " / ".join(detail_titles)
+            with st.expander(f"🔍 선택항목 상세 내역: {title_str}", expanded=True):
                 st.dataframe(detail_data[['AS 주문번호', '구분', 'AS 분류', 'AS 사유', '고객명', '접수일']], hide_index=True, use_container_width=True)
 
 if __name__ == "__main__":
