@@ -204,11 +204,15 @@ def process_as_data(df, selected_staff):
 
     # 병합 로직
     if not final_df.empty:
+        # [수정] 정렬을 통해 렌즈 -> 테 -> 피팅 순서 보장 (데이터 정합성 및 가독성 향상)
+        # 원주문번호 기준 정렬 후 구분(렌즈/테/피팅) 정렬
+        final_df = final_df.sort_values(by=['원주문번호', '구분'])
+
         agg_rules = {
-            'AS 주문번호': lambda x: x.max(),
-            '구분': lambda x: " + ".join(sorted(set(x))),
-            'AS 분류': lambda x: "\n".join(sorted(set(x))),
-            'AS 사유': lambda x: "\n".join(x.astype(str)),
+            'AS 주문번호': lambda x: x.max(), # 가장 최근 번호 (탐색용)
+            '구분': lambda x: "\n".join(x), # 단순 결합 (줄바꿈) - 순서 보장
+            'AS 분류': lambda x: "\n".join(x.astype(str)), # 순서대로 결합
+            'AS 사유': lambda x: "\n".join(x.astype(str)), # 순서대로 결합
             'key_id': lambda x: ",".join(x.astype(str)),
             'BMS_LINK': 'first' # 링크도 병합 (첫번째 날짜 기준)
         }
