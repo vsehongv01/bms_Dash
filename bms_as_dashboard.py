@@ -425,18 +425,26 @@ def main():
 
         m_df = stats_df[stats_df['Month'] == selected_month].copy()
         
+        # [추가] 소분류 추출 로직 (FirstClass > SubClass 형태의 텍스트 파싱)
+        def get_subclass(class_str):
+            if not class_str: return "미지정"
+            parts = str(class_str).split(' > ')
+            return parts[1].strip() if len(parts) > 1 else parts[0].strip()
+            
+        m_df['SubClass'] = m_df['AS 분류'].apply(get_subclass)
+        
         # [수정] 3개 컬럼으로 분리
         col_lens, col_frame, col_fitting = st.columns(3)
         
         detail_data = pd.DataFrame(); detail_titles = []
 
         # [차트 함수] 반복되는 차트 생성 로직 함수화
-        def create_pie_chart(data, title, key_name):
+        def create_pie_chart(data, title, key_name, group_col='FirstClass'):
             if data.empty:
                 st.info("데이터가 없습니다.")
                 return None
             
-            counts = data['FirstClass'].value_counts().reset_index()
+            counts = data[group_col].value_counts().reset_index()
             counts.columns = ['유형', '건수']
             counts['Label'] = counts['유형'] + " (" + counts['건수'].astype(str) + ")"
             
@@ -444,7 +452,7 @@ def main():
             
             base = alt.Chart(counts).encode(theta=alt.Theta("건수", stack=True))
             pie = base.mark_arc(outerRadius=100, innerRadius=60).encode(
-                color=alt.Color("Label", legend=alt.Legend(title="분류 (건수)")),
+                color=alt.Color("Label", scale=alt.Scale(scheme='category20'), legend=alt.Legend(title="분류 (건수)")),
                 order=alt.Order("건수", sort="descending"),
                 tooltip=["유형", "건수"],
                 opacity=alt.condition(selection, alt.value(1), alt.value(0.3))
@@ -479,12 +487,13 @@ def main():
         # 3. 피팅 차트
         with col_fitting:
             st.markdown("#### 🛠️ 피팅")
-            fitting_event = create_pie_chart(m_df[m_df['구분'] == '피팅'], "피팅", "chart_fitting")
+            # 피팅은 대분류가 모두 "피팅"이므로 소분류(SubClass) 기준으로 그룹핑
+            fitting_event = create_pie_chart(m_df[m_df['구분'] == '피팅'], "피팅", "chart_fitting", group_col='SubClass')
             if fitting_event and fitting_event.selection:
                 sel_data = fitting_event.selection.get("chart_fitting_select", [])
                 if sel_data:
                     types = [item['유형'] for item in sel_data]
-                    subset = m_df[(m_df['구분'] == '피팅') & (m_df['FirstClass'].isin(types))]
+                    subset = m_df[(m_df['구분'] == '피팅') & (m_df['SubClass'].isin(types))]
                     detail_data = pd.concat([detail_data, subset]) if not detail_data.empty else subset
                     detail_titles.append(f"피팅: {', '.join(types)}")
 
