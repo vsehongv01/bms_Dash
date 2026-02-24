@@ -151,55 +151,160 @@ def process_new_data(df, selected_staff):
             
         return c_str
 
+    def clean_prefix(val):
+        if pd.isna(val) or str(val).lower() == 'nan': return ""
+        v = str(val).strip()
+        import re
+        # 불필요한 접두사 제거
+        v = re.sub(r'^frame_size_', '', v, flags=re.IGNORECASE)
+        v = re.sub(r'^(?:[a-z]+_)?front_color_', '', v, flags=re.IGNORECASE)
+        v = re.sub(r'^front_', '', v, flags=re.IGNORECASE)
+        v = re.sub(r'^temple_(?:[a-z]+_)?(?:temple_color_)?(?:color_)?', '', v, flags=re.IGNORECASE)
+        return v
+
     def build_frame_info(row):
-        cols = ['frame.size', 'frame.color', 'frame.front', 'frame.temple', 'frame.nosepad', 'frame.temple_color']
-        parts = [str(row.get(c, '')) for c in cols if str(row.get(c, '')) and str(row.get(c, '')).lower() != 'nan']
-        return " / ".join(parts) if parts else ""
+        size = clean_prefix(row.get('frame.size', ''))
+        color = clean_prefix(row.get('frame.color', ''))
+        front = clean_prefix(row.get('frame.front', ''))
+        temple_color = clean_prefix(row.get('frame.temple_color', ''))
+        temple = clean_prefix(row.get('frame.temple', ''))
+        
+        if not temple_color and temple: 
+            temple_color = temple
+
+        line1 = f"👓 {front}" if front else ""
+        if size: 
+            line1 += f" (Size: {size})" if line1 else f"👓 (Size: {size})"
+            
+        line2_parts = []
+        if color: line2_parts.append(f"Front: {color}")
+        if temple_color: line2_parts.append(f"Temple: {temple_color}")
+        
+        line2 = f"🎨 {' | '.join(line2_parts)}" if line2_parts else ""
+        
+        if not line1 and not line2:
+            return ""
+        return f"{line1}\n{line2}".strip()
 
     def parse_lens_skus(skus_data):
-        if not skus_data or str(skus_data).lower() == 'nan' or skus_data == "": 
+        if pd.isna(skus_data) or str(skus_data).lower() == 'nan' or skus_data == "": 
             return ""
         try:
             import ast
+            import re
             s_list = ast.literal_eval(skus_data) if isinstance(skus_data, str) else skus_data
             if isinstance(s_list, list) and s_list:
-                return ", ".join([str(x) for x in s_list])
-        except: return str(skus_data)
+                main_sku = str(s_list[0])
+                options = [str(x) for x in s_list[1:]]
+                
+                parts = main_sku.split('-')
+                
+                brands = {
+                    "zeiss": "자이스", "nikon": "니콘", "chemi": "케미", 
+                    "varilux": "바리락스", "breezm": "브리즘", "tokai": "토카이"
+                }
+                names = {
+                    "clw": "클리어뷰", "sl": "스마트라이프", "seemxinf": "씨맥스INF", 
+                    "rlxneo": "릴랙씨 네오", "dfree": "디프리", "phys": "피지오", 
+                    "cmfmx": "컴포트맥스"
+                }
+                
+                brand_key = parts[0].lower() if len(parts) > 0 else ""
+                brand = f"[{brands.get(brand_key, parts[0])}]" if brand_key else ""
+                
+                idx_pos = -1
+                for i, p in enumerate(parts):
+                    if re.match(r'^1\.[5-7]\d$', p):
+                        idx_pos = i
+                        break
+                        
+                index = parts[idx_pos] if idx_pos != -1 else ""
+                
+                mid_parts = parts[1:idx_pos] if idx_pos != -1 else parts[1:]
+                l_type = ""
+                l_name = ""
+                
+                if len(mid_parts) == 1:
+                    p = mid_parts[0]
+                    if p.lower() in names:
+                        l_name = names[p.lower()]
+                    else:
+                        l_type = f"({p})"
+                elif len(mid_parts) >= 2:
+                    l_type = f"({mid_parts[0]})"
+                    n_key = mid_parts[1].lower()
+                    l_name = names.get(n_key, mid_parts[1])
+                    
+                main_str = f"{brand} {l_name}{l_type} {index}".strip()
+                main_str = re.sub(r'\s+', ' ', main_str)
+                
+                coatings = {
+                    "bgdp": "BGDP", "purebl": "퓨어블루", "perfect": "퍼펙트UV", 
+                    "pf": "포토퓨전", "gens": "트랜지션스GenS"
+                }
+                
+                opt_strs = []
+                for opt in options:
+                    o = re.sub(r'^(zeiss-bl-|chemi-bl-|baseColor_|chemi-uv-|zeiss-disc-|zeiss-|chemi-|nikon-|varilux-|tokai-)', '', opt, flags=re.IGNORECASE)
+                    
+                    if o.lower() in coatings:
+                        opt_strs.append(coatings[o.lower()])
+                    else:
+                        tmp = o
+                        for k, v in coatings.items():
+                            tmp = re.sub(rf'(?i)\b{k}\b', v, tmp)
+                        opt_strs.append(tmp)
+                        
+                opt_str = ", ".join(opt_strs)
+                if opt_str:
+                    return f"{main_str} / {opt_str}"
+                return main_str
+        except Exception: 
+            return str(skus_data)
         return str(skus_data)
 
-    def format_val(val, unit):
+    def format_val(val, unit, prefix=""):
         s_val = str(val).strip()
         if not s_val or s_val.lower() == "nan": return ""
+        if prefix: return f"{prefix}: {s_val}{unit}"
         return f"{s_val}{unit}"
 
     results = []
     for _, row in my_df.iterrows():
-        # 테/렌즈/도수 문자열 먼저 생성
+        # 테 정보 생성
         frame_info_str = build_frame_info(row)
         
         # 렌즈 정보 (L렌즈 / R렌즈)
         l_lens = parse_lens_skus(row.get('lens.left.skus', ''))
         r_lens = parse_lens_skus(row.get('lens.right.skus', ''))
-        lens_info_str = f"L렌즈: {l_lens}\nR렌즈: {r_lens}" if (l_lens or r_lens) else ""
+        
+        lens_lines = []
+        if l_lens: lens_lines.append(f"🅻 {l_lens}")
+        if r_lens: lens_lines.append(f"🆁 {r_lens}")
+        lens_info_str = "\n".join(lens_lines)
 
         # 도수 정보
-        l_sph = format_val(row.get('optometry.data.optimal.left.sph', ''), 'D')
-        l_cyl = format_val(row.get('optometry.data.optimal.left.cyl', ''), 'D')
-        l_axi = format_val(row.get('optometry.data.optimal.left.axi', ''), '°')
-        l_add = format_val(row.get('optometry.data.optimal.left.add', ''), 'D')
-        l_pd  = format_val(row.get('optometry.data.optimal.left.pd', ''), 'mm')
+        l_sph = format_val(row.get('optometry.data.optimal.left.sph', ''), 'D', 'SPH')
+        l_cyl = format_val(row.get('optometry.data.optimal.left.cyl', ''), 'D', 'CYL')
+        l_axi = format_val(row.get('optometry.data.optimal.left.axi', ''), '°', 'AXIS')
+        l_add = format_val(row.get('optometry.data.optimal.left.add', ''), 'D', 'ADD')
+        l_pd  = format_val(row.get('optometry.data.optimal.left.pd', ''), 'mm', 'PD')
         
-        r_sph = format_val(row.get('optometry.data.optimal.right.sph', ''), 'D')
-        r_cyl = format_val(row.get('optometry.data.optimal.right.cyl', ''), 'D')
-        r_axi = format_val(row.get('optometry.data.optimal.right.axi', ''), '°')
-        r_add = format_val(row.get('optometry.data.optimal.right.add', ''), 'D')
-        r_pd  = format_val(row.get('optometry.data.optimal.right.pd', ''), 'mm')
+        r_sph = format_val(row.get('optometry.data.optimal.right.sph', ''), 'D', 'SPH')
+        r_cyl = format_val(row.get('optometry.data.optimal.right.cyl', ''), 'D', 'CYL')
+        r_axi = format_val(row.get('optometry.data.optimal.right.axi', ''), '°', 'AXIS')
+        r_add = format_val(row.get('optometry.data.optimal.right.add', ''), 'D', 'ADD')
+        r_pd  = format_val(row.get('optometry.data.optimal.right.pd', ''), 'mm', 'PD')
 
-        l_opts = (f"L 구면도수(SPH): {l_sph}\nL 난시(CYL): {l_cyl}\nL 난시 축(AXIS): {l_axi}\nL Add: {l_add}\nL PD: {l_pd}")
-        r_opts = (f"R 구면도수(SPH): {r_sph}\nR 난시(CYL): {r_cyl}\nR 난시 축(AXIS): {r_axi}\nR Add: {r_add}\nR PD: {r_pd}")
-        # 값이 하나도 없지 않은 이상 도수 정보 남김 (전부 비어있다면 표시 x 등)
-        has_optometry = any(x for x in [l_sph, l_cyl, l_axi, l_add, l_pd, r_sph, r_cyl, r_axi, r_add, r_pd])
-        optometry_info_str = f"[L 도수]\n{l_opts}\n\n[R 도수]\n{r_opts}"
+        l_opts_arr = [x for x in [l_sph, l_cyl, l_axi, l_add, l_pd] if x]
+        r_opts_arr = [x for x in [r_sph, r_cyl, r_axi, r_add, r_pd] if x]
+        
+        opts_lines = []
+        if l_opts_arr: opts_lines.append(f"[ L ] {' | '.join(l_opts_arr)}")
+        if r_opts_arr: opts_lines.append(f"[ R ] {' | '.join(r_opts_arr)}")
+        optometry_info_str = "\n".join(opts_lines)
+        
+        has_optometry = bool(l_opts_arr or r_opts_arr)
         
         # 주문 타입 판단 로직 수정 (클립온 포함)
         f_type = str(row.get('frameType', '')).strip().lower()
