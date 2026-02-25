@@ -248,11 +248,10 @@ def main():
 
     st.sidebar.markdown("---")
     st.sidebar.subheader("데이터 동기화")
-    sync_mode = st.sidebar.selectbox("기간 선택", ["최근 1주일 (빠름)", "최근 3개월 (보통)", "전체 기간 (느림)"])
-    mode_map = {"최근 1주일 (빠름)": "1week", "최근 3개월 (보통)": "3months", "전체 기간 (느림)": "all"}
+    st.sidebar.caption("최근 1주일 데이터를 업데이트합니다.")
     
     if st.sidebar.button("🚀 데이터 업데이트 실행"):
-        mode = mode_map[sync_mode]
+        mode = "1week"
         progress_bar = st.sidebar.progress(0, text="업데이트 준비 중...")
         status_text = st.sidebar.empty()
         try:
@@ -358,7 +357,7 @@ def main():
             "고객명": st.column_config.TextColumn("고객명", width="medium"),
         },
         column_order=['확인', 'AS 주문번호', '접수일', '팝업', '구분', 'AS 분류', '원주문번호', 'AS 사유', '고객명'],
-        height=750, hide_index=True, use_container_width=True, 
+        height=750, hide_index=True, width="stretch", 
         key=f"as_table_page_{current_page}_{st.session_state['reset_counter']}" # <--- Key 변경으로 강제 리셋
     )
 
@@ -458,7 +457,7 @@ def main():
                 opacity=alt.condition(selection, alt.value(1), alt.value(0.3))
             ).add_params(selection)
             
-            return st.altair_chart(pie, use_container_width=True, on_select="rerun", key=key_name)
+            return st.altair_chart(pie, width="stretch", on_select="rerun", key=key_name)
 
         # 1. 렌즈 차트
         with col_lens:
@@ -502,7 +501,7 @@ def main():
             st.markdown("---")
             title_str = " / ".join(detail_titles)
             with st.expander(f"🔍 선택항목 상세 내역: {title_str}", expanded=True):
-                st.dataframe(detail_data[['AS 주문번호', '구분', 'AS 분류', 'AS 사유', '고객명', '접수일']], hide_index=True, use_container_width=True)
+                st.dataframe(detail_data[['AS 주문번호', '구분', 'AS 분류', 'AS 사유', '고객명', '접수일']], hide_index=True, width="stretch")
 
 if __name__ == "__main__":
     main()

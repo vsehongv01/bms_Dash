@@ -20,3 +20,6 @@ credentials.json
 # OS
 .DS_Store
 Thumbs.db
+
+# Chrome
+chrome_profile/

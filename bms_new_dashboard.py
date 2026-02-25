@@ -68,9 +68,7 @@ def process_new_data(df, selected_staff):
     # 당일 기준 2개월 이상 지난 데이터 제외
     if 'createdAt' in df.columns:
         dt_col = pd.to_datetime(df['createdAt'], errors='coerce', utc=True)
-        # 60일 전(약 2개월)을 기준으로 필터링
         two_months_ago = pd.Timestamp.now(tz='UTC') - pd.DateOffset(months=2)
-        # 날짜가 파싱되지 않은 데이터(NaT)는 일단 보존하고, 날짜가 있는 경우만 비교
         df = df[dt_col.isna() | (dt_col >= two_months_ago)]
 
     # Archived 및 Delivered 제외
@@ -85,8 +83,7 @@ def process_new_data(df, selected_staff):
     if 'lensType' in df.columns:
         cond_lens = df['lensType'].astype(str).str.lower().isin(['custom', 'as'])
     
-    # 테/렌즈 정보가 아예 없는 주문도 클립온 등의 목적으로 가져오기 위해 조건 수정
-    # frameType/lensType 둘 다 nan이거나 빈 문자열인 경우도 포함
+    # 테/렌즈 정보가 아예 없는 주문(클립온 등) 포함
     cond_empty_frame = False
     cond_empty_lens = False
     if 'frameType' in df.columns:
@@ -104,7 +101,7 @@ def process_new_data(df, selected_staff):
     target_df = df[cond_frame | cond_lens | cond_clipon].copy()
     if target_df.empty: return pd.DataFrame()
 
-    # 조건 2: statusDetail.lensStaff 나 statusDetail.frameStaff 가 지정된 담당자와 일치
+    # 조건 2: 담당자 매칭
     cond_staff1 = False
     cond_staff2 = False
     if 'statusDetail.lensStaff' in target_df.columns:
@@ -115,47 +112,37 @@ def process_new_data(df, selected_staff):
     my_df = target_df[cond_staff1 | cond_staff2].copy()
     if my_df.empty: return pd.DataFrame()
 
-    # 헬퍼 함수
+    # 헬퍼 함수 1: 전화번호 파싱
     def parse_contacts(c_data):
         if not c_data or str(c_data).strip() == "" or str(c_data).lower() == 'nan': 
             return ""
-        
-        # 문자열을 파싱
         c_str = str(c_data).strip()
         
         try:
             import ast
-            # 파이썬 리스트/딕셔너리 문자열 형태인 경우
             c_list = ast.literal_eval(c_str) if c_str.startswith('[') else c_data
             if isinstance(c_list, list):
                 return ", ".join([str(item.get('value', '')) for item in c_list if isinstance(item, dict) and 'value' in item])
-        except Exception:
-            pass
+        except Exception: pass
             
-        # JSON 파싱 시전
         try:
             import json
-            # 작은따옴표를 큰따옴표로 변환 후 JSON 파싱, 파이썬 불리언 주의
             clean_str = c_str.replace("'", '"').replace("True", "true").replace("False", "false")
             c_list = json.loads(clean_str)
             if isinstance(c_list, list):
                 return ", ".join([str(item.get('value', '')) for item in c_list if isinstance(item, dict) and 'value' in item])
-        except Exception:
-            pass
+        except Exception: pass
             
-        # 정규표현식으로 전화번호 형태 추출 (만약 파싱 실패시 폴백)
         import re
         phones = re.findall(r"(?:010|02|03[1-3]|04[1-4]|05[1-5]|06[1-4])[-.]?\d{3,4}[-.]?\d{4}", c_str)
-        if phones:
-            return ", ".join(phones)
-            
+        if phones: return ", ".join(phones)
         return c_str
 
+    # 헬퍼 함수 2: 테 정보 파싱 (두 개의 변수로 반환하도록 수정)
     def clean_prefix(val):
         if pd.isna(val) or str(val).lower() == 'nan': return ""
         v = str(val).strip()
         import re
-        # 불필요한 접두사 제거
         v = re.sub(r'^frame_size_', '', v, flags=re.IGNORECASE)
         v = re.sub(r'^(?:[a-z]+_)?front_color_', '', v, flags=re.IGNORECASE)
         v = re.sub(r'^front_', '', v, flags=re.IGNORECASE)
@@ -182,12 +169,11 @@ def process_new_data(df, selected_staff):
         
         line2 = f"🎨 {' | '.join(line2_parts)}" if line2_parts else ""
         
-        if not line1 and not line2:
-            return ""
-        return f"{line1}\n{line2}".strip()
+        return line1.strip(), line2.strip()
 
+    # 헬퍼 함수 3: 렌즈 정보 파싱
     def parse_lens_skus(skus_data):
-        if pd.isna(skus_data) or str(skus_data).lower() == 'nan' or skus_data == "": 
+        if pd.isna(skus_data) or str(skus_data).lower() == 'nan' or skus_data == "":
             return ""
         try:
             import ast
@@ -196,71 +182,89 @@ def process_new_data(df, selected_staff):
             if isinstance(s_list, list) and s_list:
                 main_sku = str(s_list[0])
                 options = [str(x) for x in s_list[1:]]
-                
+
                 parts = main_sku.split('-')
-                
                 brands = {
-                    "zeiss": "자이스", "nikon": "니콘", "chemi": "케미", 
-                    "varilux": "바리락스", "breezm": "브리즘", "tokai": "토카이"
+                    "zeiss": "자이스", "nikon": "니콘", "chemi": "케미",
+                    "varilux": "바리락스", "breezm": "브리즘", "tokai": "토카이",
+                    "essilor": "에실로", "dagas": "다가스", "eloptical": "이엘옵티컬",
+                    "sundayoptical": "선데이옵티컬", "airtable": "에어테이블"
                 }
                 names = {
-                    "clw": "클리어뷰", "sl": "스마트라이프", "seemxinf": "씨맥스INF", 
-                    "rlxneo": "릴랙씨 네오", "dfree": "디프리", "phys": "피지오", 
-                    "cmfmx": "컴포트맥스"
+                    "clw": "클리어뷰", "clwrx": "클리어뷰Rx", "sl": "스마트라이프", "sv": "단초점",
+                    "drvs": "드라이브세이프", "drvsrx": "드라이브세이프Rx", "myocare": "마이오케어",
+                    "dg": "디지털", "sldg": "스마트라이프 디지털",
+                    "seemxinf": "씨맥스 인피니트", "seemxmsz": "씨맥스", "seemxutz": "씨맥스",
+                    "rlxneo": "릴랙씨 네오", "rlxneopl": "릴랙씨 네오", "myse": "마이씨", "bluvpl": "블루라이트 플러스",
+                    "prspz": "프레지오", "hno": "홈앤오피스", "solwn": "솔테스", "solwp": "솔테스",
+                    "dfree": "디프리", "asp": "비구면", "aspxdrv": "엑스드라이브", "asprx": "비구면Rx",
+                    "mfcds": "매직폼", "mfxt": "매직폼XT", "mffrs": "매직폼", "mfst": "매직폼",
+                    "phys": "피지오", "physf": "피지오", "cmfmx": "컴포트 맥스", "cmfmxf": "컴포트 맥스",
+                    "xrf": "XR", "xrd": "XR", "lbrtyf": "리버티", "lbrty": "리버티",
+                    "stellest": "스텔리스트", "hr": "HR"
                 }
-                
+
                 brand_key = parts[0].lower() if len(parts) > 0 else ""
-                brand = f"[{brands.get(brand_key, parts[0])}]" if brand_key else ""
-                
+                brand_name = f"[{brands.get(brand_key, parts[0])}]" if brand_key else ""
+
                 idx_pos = -1
                 for i, p in enumerate(parts):
-                    if re.match(r'^1\.[5-7]\d$', p):
-                        idx_pos = i
-                        break
-                        
-                index = parts[idx_pos] if idx_pos != -1 else ""
-                
+                    if re.match(r'^1\.[5-9]\d*$', p):
+                        idx_pos = i; break
+
+                refractive_index = parts[idx_pos] if idx_pos != -1 else ""
+
                 mid_parts = parts[1:idx_pos] if idx_pos != -1 else parts[1:]
                 l_type = ""
                 l_name = ""
-                
-                if len(mid_parts) == 1:
-                    p = mid_parts[0]
-                    if p.lower() in names:
-                        l_name = names[p.lower()]
+
+                if len(mid_parts) > 0:
+                    l_type = mid_parts[0]
+                    if len(mid_parts) > 1:
+                        raw_name = "-".join(mid_parts[1:]).lower()
+                        l_name = names.get(raw_name, "-".join(mid_parts[1:]))
                     else:
-                        l_type = f"({p})"
-                elif len(mid_parts) >= 2:
-                    l_type = f"({mid_parts[0]})"
-                    n_key = mid_parts[1].lower()
-                    l_name = names.get(n_key, mid_parts[1])
-                    
-                main_str = f"{brand} {l_name}{l_type} {index}".strip()
+                        l_name = names.get(l_type.lower(), l_type)
+
+                type_str = f"({l_type})" if l_type else ""
+                main_str = f"{brand_name} {l_name}{type_str} {refractive_index}".strip()
                 main_str = re.sub(r'\s+', ' ', main_str)
-                
+
                 coatings = {
-                    "bgdp": "BGDP", "purebl": "퓨어블루", "perfect": "퍼펙트UV", 
-                    "pf": "포토퓨전", "gens": "트랜지션스GenS"
+                    "bgdp": "BGDP", "purebl": "퓨어블루", "perfect": "퍼펙트UV",
+                    "dp": "DP", "dd": "드라이브세이프", "pf": "포토퓨전 변색",
+                    "gens": "트랜지션스 GenS", "gen8": "트랜지션스 Gen8",
+                    "xtractive": "엑스트라액티브", "ush": "USH", "etcuv": "ETC UV",
+                    "innermt": "내면MT", "seeuv": "SEE UV", "seecoat": "씨코트",
+                    "bluv": "블루라이트", "seeuvbluv": "블루라이트", "nir": "근적외선", 
+                    "photoaid": "포토에이드 변색", "varsity": "바시티 변색", 
+                    "crizalprevencia": "프리벤시아", "crizalrock": "크리잘락", 
+                    "prism": "프리즘", "bp": "BP", "xdrive": "엑스드라이브", "dvsun": "DV선"
                 }
-                
+                colors = {
+                    "brown": "브라운", "gray": "그레이", "grey": "그레이",
+                    "green": "그린", "pioneer": "파이오니어", "black": "블랙",
+                    "sapphire": "사파이어", "cocoa brown": "코코아브라운",
+                    "ice gray": "아이스그레이", "camel brown": "카멜브라운",
+                    "shadow orange": "섀도우오렌지", "khaki brown": "카키브라운"
+                }
+
                 opt_strs = []
                 for opt in options:
-                    o = re.sub(r'^(zeiss-bl-|chemi-bl-|baseColor_|chemi-uv-|zeiss-disc-|zeiss-|chemi-|nikon-|varilux-|tokai-)', '', opt, flags=re.IGNORECASE)
-                    
-                    if o.lower() in coatings:
-                        opt_strs.append(coatings[o.lower()])
-                    else:
-                        tmp = o
-                        for k, v in coatings.items():
-                            tmp = re.sub(rf'(?i)\b{k}\b', v, tmp)
-                        opt_strs.append(tmp)
-                        
-                opt_str = ", ".join(opt_strs)
-                if opt_str:
-                    return f"{main_str} / {opt_str}"
+                    o = re.sub(r'^(zeiss-[a-z]+-|nikon-[a-z]+-|chemi-[a-z]+-|varilux-[a-z]+-|tokai-[a-z]+-|dagas-[a-z]+-|so-[a-z]+-|el-[a-z]+-|airtable-[a-z]+-|baseColor_|mirrorColor_)', '', opt, flags=re.IGNORECASE)
+                    o_lower = o.lower()
+                    if o_lower in coatings: opt_strs.append(coatings[o_lower])
+                    elif o_lower in colors: opt_strs.append(colors[o_lower])
+                    elif "golf" in o_lower: opt_strs.append("골프")
+                    elif o_lower and o_lower != "nan": opt_strs.append(o)
+
+                unique_opts = list(dict.fromkeys(opt_strs))
+                opt_str = ", ".join(unique_opts)
+
+                if opt_str: return f"{main_str} / {opt_str}"
                 return main_str
-        except Exception: 
-            return str(skus_data)
+
+        except Exception: return str(skus_data)
         return str(skus_data)
 
     def format_val(val, unit, prefix=""):
@@ -271,19 +275,17 @@ def process_new_data(df, selected_staff):
 
     results = []
     for _, row in my_df.iterrows():
-        # 테 정보 생성
-        frame_info_str = build_frame_info(row)
+        # 테 정보 (모델/사이즈와 색상을 분리)
+        frame_model, frame_color = build_frame_info(row)
         
-        # 렌즈 정보 (L렌즈 / R렌즈)
-        l_lens = parse_lens_skus(row.get('lens.left.skus', ''))
-        r_lens = parse_lens_skus(row.get('lens.right.skus', ''))
+        # 렌즈 정보 분리
+        l_lens_raw = parse_lens_skus(row.get('lens.left.skus', ''))
+        r_lens_raw = parse_lens_skus(row.get('lens.right.skus', ''))
         
-        lens_lines = []
-        if l_lens: lens_lines.append(f"🅻 {l_lens}")
-        if r_lens: lens_lines.append(f"🆁 {r_lens}")
-        lens_info_str = "\n".join(lens_lines)
+        l_lens_str = f"🅻 {l_lens_raw}" if l_lens_raw else ""
+        r_lens_str = f"🆁 {r_lens_raw}" if r_lens_raw else ""
 
-        # 도수 정보
+        # 도수 정보 분리
         l_sph = format_val(row.get('optometry.data.optimal.left.sph', ''), 'D', 'SPH')
         l_cyl = format_val(row.get('optometry.data.optimal.left.cyl', ''), 'D', 'CYL')
         l_axi = format_val(row.get('optometry.data.optimal.left.axi', ''), '°', 'AXIS')
@@ -299,20 +301,16 @@ def process_new_data(df, selected_staff):
         l_opts_arr = [x for x in [l_sph, l_cyl, l_axi, l_add, l_pd] if x]
         r_opts_arr = [x for x in [r_sph, r_cyl, r_axi, r_add, r_pd] if x]
         
-        opts_lines = []
-        if l_opts_arr: opts_lines.append(f"[ L ] {' | '.join(l_opts_arr)}")
-        if r_opts_arr: opts_lines.append(f"[ R ] {' | '.join(r_opts_arr)}")
-        optometry_info_str = "\n".join(opts_lines)
+        l_opts_str = f"[ L ] {' | '.join(l_opts_arr)}" if l_opts_arr else ""
+        r_opts_str = f"[ R ] {' | '.join(r_opts_arr)}" if r_opts_arr else ""
         
+        # 주문 타입 판단
         has_optometry = bool(l_opts_arr or r_opts_arr)
-        
-        # 주문 타입 판단 로직 수정 (클립온 포함)
         f_type = str(row.get('frameType', '')).strip().lower()
         l_type = str(row.get('lensType', '')).strip().lower()
         
-        # 실제 테 사이즈/색상 정보 문자열과 렌즈 도수/SKU 등이 전부 비어있으면 클립온
-        has_frame_detail = bool(frame_info_str.strip())
-        has_lens_detail = bool(lens_info_str.strip() or has_optometry)
+        has_frame_detail = bool(frame_model or frame_color)
+        has_lens_detail = bool(l_lens_str or r_lens_str or has_optometry)
         
         if not has_frame_detail and not has_lens_detail:
             order_type_str = "클립온"
@@ -321,7 +319,6 @@ def process_new_data(df, selected_staff):
         elif f_type == 'as' or l_type == 'as':
             order_type_str = "AS주문"
         else:
-            # 기타 경우 (테나 렌즈 정보는 있는데 타입이 애매한 경우)
             order_type_str = "기타"
 
         createdAt = row.get('createdAt', '')
@@ -334,22 +331,18 @@ def process_new_data(df, selected_staff):
             '주문번호': row.get('code', ''),
             '이름': row.get('customer.name', ''),
             '전화번호': parse_contacts(row.get('customer.contacts', '')),
-            '테 정보': frame_info_str,
-            '렌즈 정보': lens_info_str,
-            '도수 정보': optometry_info_str,
+            '테(모델/사이즈)': frame_model,
+            '테(색상)': frame_color,
+            'L렌즈': l_lens_str,
+            'R렌즈': r_lens_str,
+            'L도수': l_opts_str,
+            'R도수': r_opts_str,
         })
 
     final_df = pd.DataFrame(results)
     if not final_df.empty:
         final_df = final_df.sort_values(by='접수일', ascending=False)
     
-    def generate_smart_link(date_str):
-        if not date_str or date_str == "": return BMS_MAIN_URL
-        return f"{BMS_MAIN_URL}?startDate={date_str}&endDate={date_str}"
-    
-    if not final_df.empty:
-        final_df['BMS_LINK'] = final_df['접수일'].apply(generate_smart_link)
-
     return final_df
 
 # ==========================================
@@ -359,7 +352,6 @@ def main():
     if 'hidden_new_ids' not in st.session_state:
         st.session_state['hidden_new_ids'] = set()
 
-    # --- [New] BMS Automation Integration ---
     try:
         from bms_automation import open_bms_popup
     except ImportError:
@@ -374,11 +366,10 @@ def main():
 
     st.sidebar.markdown("---")
     st.sidebar.subheader("데이터 동기화")
-    sync_mode = st.sidebar.selectbox("기간 선택", ["최근 1주일 (빠름)", "최근 3개월 (보통)", "전체 기간 (느림)"])
-    mode_map = {"최근 1주일 (빠름)": "1week", "최근 3개월 (보통)": "3months", "전체 기간 (느림)": "all"}
+    st.sidebar.caption("최근 1주일 데이터를 업데이트합니다.")
     
     if st.sidebar.button("🚀 데이터 업데이트 실행"):
-        mode = mode_map[sync_mode]
+        mode = "1week"
         progress_bar = st.sidebar.progress(0, text="업데이트 준비 중...")
         status_text = st.sidebar.empty()
         try:
@@ -457,14 +448,17 @@ def main():
     if 'new_reset_counter' not in st.session_state:
         st.session_state['new_reset_counter'] = 0
 
-    view_cols = ['key_id', '주문타입', '주문번호', '접수일', '이름', '전화번호', '테 정보', '렌즈 정보', '도수 정보']
+    # 컬럼 구조 변경
+    view_cols = ['key_id', '주문타입', '주문번호', '접수일', '이름', '전화번호', 
+                 '테(모델/사이즈)', '테(색상)', 'L렌즈', 'R렌즈', 'L도수', 'R도수']
     final_view = display_df[[c for c in view_cols if c in display_df.columns]].copy()
-    final_view.insert(0, "확인", False) # 완료 체크
-    final_view.insert(3, "팝업", False) # 자동화 체크
+    final_view.insert(0, "확인", False)
+    final_view.insert(3, "팝업", False)
 
     start_idx = (current_page - 1) * ITEMS_PER_PAGE
     paged_view = final_view.iloc[start_idx:start_idx + ITEMS_PER_PAGE].copy()
 
+    # 컬럼 크기 재설정
     edited_df = st.data_editor(
         paged_view,
         column_config={
@@ -476,11 +470,15 @@ def main():
             "주문번호": st.column_config.TextColumn("주문번호", width="medium"),
             "이름": st.column_config.TextColumn("이름", width="small"),
             "전화번호": st.column_config.TextColumn("전화번호", width="medium"),
-            "테 정보": st.column_config.TextColumn("테 정보", width="large"),
-            "렌즈 정보": st.column_config.TextColumn("렌즈 정보", width="medium"),
-            "도수 정보": st.column_config.TextColumn("도수 상세 정보", width="large"),
+            "테(모델/사이즈)": st.column_config.TextColumn("테(모델/사이즈)", width="medium"),
+            "테(색상)": st.column_config.TextColumn("테(색상)", width="medium"),
+            "L렌즈": st.column_config.TextColumn("L렌즈", width="medium"),
+            "R렌즈": st.column_config.TextColumn("R렌즈", width="medium"),
+            "L도수": st.column_config.TextColumn("L도수", width="large"),
+            "R도수": st.column_config.TextColumn("R도수", width="large"),
         },
-        column_order=['확인', '주문타입', '주문번호', '접수일', '팝업', '이름', '전화번호', '테 정보', '렌즈 정보', '도수 정보'],
+        column_order=['확인', '주문타입', '주문번호', '접수일', '팝업', '이름', '전화번호', 
+                      '테(모델/사이즈)', '테(색상)', 'L렌즈', 'R렌즈', 'L도수', 'R도수'],
         height=750, hide_index=True, width="stretch", 
         key=f"new_table_page_{current_page}_{st.session_state['new_reset_counter']}"
     )
@@ -521,7 +519,6 @@ def main():
             else:
                 st.error("자동화 모듈 없음")
         
-        # 체크박스 리셋을 위한 리런
         st.session_state['new_reset_counter'] += 1
         rerun_needed = True
 

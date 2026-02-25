@@ -37,7 +37,7 @@ def fetch_full_data(start_date):
     
     print(f"🚀 {start_date} ~ {end_date} 전체 데이터 수집 시작...")
     try:
-        res = requests.post(url_list, json=payload, headers=HEADERS, cookies=COOKIES)
+        res = requests.post(url_list, json=payload, headers=HEADERS, cookies=COOKIES, timeout=30)
         if res.status_code not in [200, 201]:
             print(f"❌ 목록 가져오기 실패 (Status: {res.status_code})")
             print(f"👉 쿠키가 만료되었거나 권한이 없을 수 있습니다. (Response: {res.text[:100]})")
@@ -57,7 +57,7 @@ def fetch_full_data(start_date):
         sys.stdout.flush()
         
         try:
-            detail_res = requests.get(f"https://bmsapi.breezm.com/order/{oid}/detail", headers=HEADERS, cookies=COOKIES)
+            detail_res = requests.get(f"https://bmsapi.breezm.com/order/{oid}/detail", headers=HEADERS, cookies=COOKIES, timeout=15)
             if detail_res.status_code != 200:
                  print(f"⚠️ 상세 정보 가져오기 실패 ({oid}): {detail_res.status_code}")
                  continue
