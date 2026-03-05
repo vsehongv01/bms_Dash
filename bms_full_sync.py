@@ -1,12 +1,15 @@
 import requests
 import sys
 import pandas as pd
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from dotenv import load_dotenv
+from supabase import create_client, Client
 from datetime import datetime, timedelta
 import time
 import os
 import warnings
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
 # ==========================================
@@ -14,21 +17,35 @@ warnings.simplefilter(action='ignore', category=FutureWarning)
 # ==========================================
 COOKIE = "connect.sid=s%3AUVy2iaeTlYD_7JsxXi0APfnYvsfuTC_T.%2BBpwa59U7ON9nBA%2F8x9yUcX7bOxIxpoW351Pe%2F54kgQ"
 STORE_ID = 12
-SPREADSHEET_NAME = "BMS_Dashboard_Data"
+
+load_dotenv()
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+TARGET_TABLE = "bms_orders"
 # ==========================================
 
 HEADERS = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}
 COOKIES = {"connect.sid": COOKIE.split('=')[-1]}
 
-def get_google_sheet():
-    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    # 절대 경로로 credentials.json 위치 찾기 (FileNotFoundError 해결)
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    credentials_path = os.path.join(base_dir, 'credentials.json')
-    
-    creds = ServiceAccountCredentials.from_json_keyfile_name(credentials_path, scope)
-    client = gspread.authorize(creds)
-    return client.open(SPREADSHEET_NAME).get_worksheet(0)
+def get_session():
+    session = requests.Session()
+    retry_strategy = Retry(
+        total=5,  # Maximum number of retries
+        backoff_factor=1,  # Wait 1, 2, 4, 8, 16 seconds between retries
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["HEAD", "GET", "OPTIONS", "POST"]
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    session.headers.update(HEADERS)
+    session.cookies.update(COOKIES)
+    return session
+
+def get_supabase_client():
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return None
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 def fetch_full_data(start_date):
     end_date = datetime.now().strftime("%Y-%m-%d")
@@ -36,8 +53,11 @@ def fetch_full_data(start_date):
     payload = {"storeIds": [STORE_ID], "startDate": start_date, "endDate": end_date}
     
     print(f"🚀 {start_date} ~ {end_date} 전체 데이터 수집 시작...")
+    
+    session = get_session()
+    
     try:
-        res = requests.post(url_list, json=payload, headers=HEADERS, cookies=COOKIES, timeout=30)
+        res = session.post(url_list, json=payload, timeout=(10, 30))
         if res.status_code not in [200, 201]:
             print(f"❌ 목록 가져오기 실패 (Status: {res.status_code})")
             print(f"👉 쿠키가 만료되었거나 권한이 없을 수 있습니다. (Response: {res.text[:100]})")
@@ -57,7 +77,7 @@ def fetch_full_data(start_date):
         sys.stdout.flush()
         
         try:
-            detail_res = requests.get(f"https://bmsapi.breezm.com/order/{oid}/detail", headers=HEADERS, cookies=COOKIES, timeout=15)
+            detail_res = session.get(f"https://bmsapi.breezm.com/order/{oid}/detail", timeout=(5, 15))
             if detail_res.status_code != 200:
                  print(f"⚠️ 상세 정보 가져오기 실패 ({oid}): {detail_res.status_code}")
                  continue
@@ -79,9 +99,12 @@ def fetch_full_data(start_date):
         
     return pd.concat(valid_rows, ignore_index=True)
 
-def sync_to_google(new_df):
-    sheet = get_google_sheet()
-    
+def sync_to_supabase(new_df):
+    supabase = get_supabase_client()
+    if not supabase:
+        print("❌ Supabase 환경 변수가 설정되지 않았습니다.")
+        return
+        
     # 1. 리스트 및 딕셔너리 형태를 문자열로 변환하고 글자 수 제한(30,000자) 걸기
     def clean_cell(x):
         if isinstance(x, (list, dict)): val = str(x)
@@ -90,58 +113,71 @@ def sync_to_google(new_df):
             return val[:30000] + "...(중략)"
         return val
 
-    # 모든 셀에 대해 클리닝 작업 수행
     for col in new_df.columns:
         new_df[col] = new_df[col].apply(clean_cell)
 
-    # 2. NaN(빈값) 처리
-    new_df = new_df.fillna("")
+    # 2. 레코드 형태 변환 및 NaN/빈 문자열 처리
+    import math
+    records = new_df.to_dict('records')
+    cleaned_records = []
     
-    # 3. 기존 데이터와 합치기
-    try:
-        rows = sheet.get_all_records()
-        if rows:
-            existing_df = pd.DataFrame(rows)
-            # FutureWarning 방지: 데이터가 있는 것들만 합침. drop_duplicates는 code 기준
-            combined_df = pd.concat([existing_df, new_df]).drop_duplicates(subset=['code'], keep='last')
-        else:
-            combined_df = new_df
-    except:
-        combined_df = new_df
+    for row in records:
+        # 1. 유령 행 제거: id나 code가 아예 없거나 빈 값이면 버림
+        if 'id' not in row or 'code' not in row:
+            continue
+            
+        r_id = row['id']
+        r_code = row['code']
+        if r_id is None or str(r_id).strip() == "" or str(r_id).strip().lower() == "nan":
+            continue
+        if r_code is None or str(r_code).strip() == "" or str(r_code).strip().lower() == "nan":
+            continue
+            
+        clean_row = {}
+        for k, v in row.items():
+            if v is None or (isinstance(v, float) and math.isnan(v)):
+                clean_row[k] = None
+            elif isinstance(v, str) and (v.strip().lower() == "nan" or v == ""):
+                clean_row[k] = None
+            else:
+                # 2. 소수점(.0) 제거 (Id가 포함된 컬럼이거나 실제 정수로 끝나는 숫자 값들)
+                val_str = str(v)
+                if val_str.endswith('.0') and val_str[:-2].isdigit():
+                    clean_row[k] = val_str[:-2]
+                else:
+                    clean_row[k] = v
+                    
+        cleaned_records.append(clean_row)
 
-    combined_df = combined_df.fillna("")
+    # 3. 데이터 분할 및 Upsert 전송
+    import requests
+    url = f"{SUPABASE_URL}/rest/v1/{TARGET_TABLE}"
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal, resolution=merge-duplicates"
+    }
 
-    # 4. 데이터 전송 (분할 전송 적용)
-    data_to_update = [combined_df.columns.values.tolist()] + combined_df.values.tolist()
-    
     try:
-        sheet.clear()
-        print("\n🧹 구글 시트 초기화 완료. 너무 많은 데이터라 1000개씩 쪼개서 전송합니다...")
+        print("\n🧹 Supabase에 데이터를 저장(Upsert)합니다...")
         
-        # 헤더(첫 줄) 먼저 업데이트
-        # gspread 버전에 따라 kwargs 호환성 고려
-        sheet.update(values=[data_to_update[0]], range_name="A1")
+        chunk_size = 100
+        total = len(cleaned_records)
         
-        chunk_size = 1000 # 1000줄씩 쪼개기
-        row_idx = 2       # 두 번째 줄부터 데이터 시작
-        
-        for i in range(1, len(data_to_update), chunk_size):
-            chunk = data_to_update[i : i + chunk_size]
-            start_cell = f"A{row_idx}"
+        for i in range(0, total, chunk_size):
+            chunk = cleaned_records[i : i + chunk_size]
+            response = requests.post(url, headers=headers, json=chunk)
+            if response.status_code in [200, 201, 204]:
+                print(f"📦 {min(i + chunk_size, total)} / {total} 건 처리 완료")
+            else:
+                print(f"❌ Supabase 데이터 저장 중 오류 (HTTP {response.status_code}): {response.text}")
+            time.sleep(0.5)
             
-            # gspread 버전에 상관없이 작동하도록 kwargs 사용
-            sheet.update(values=chunk, range_name=start_cell)
-            
-            print(f"📦 {i} ~ {i + len(chunk) - 1}번째 줄 전송 완료")
-            row_idx += len(chunk)
-            
-            # 구글 서버가 숨 쉴 틈(1.5초) 주기 (API 과부하 방지)
-            time.sleep(1.5) 
-            
-        print(f"\n✅ 동기화 완료! 총 {len(combined_df)}건의 데이터가 성공적으로 저장되었습니다.")
+        print(f"\n✅ 동기화 완료! 총 {total}건의 데이터가 성공적으로 저장되었습니다.")
         
     except Exception as e:
-        print(f"❌ 시트 업데이트 중 오류 발생: {e}")
+        print(f"❌ Supabase 데이터 전송 오류 발생: {e}")
 
 
 if __name__ == "__main__":
@@ -164,7 +200,7 @@ if __name__ == "__main__":
             
         df = fetch_full_data(start_date)
         if not df.empty:
-            sync_to_google(df)
+            sync_to_supabase(df)
             
     # 인자가 없으면 대화형 모드 (기존 방식)
     else:
@@ -183,4 +219,4 @@ if __name__ == "__main__":
         
         df = fetch_full_data(start)
         if not df.empty:
-            sync_to_google(df)
+            sync_to_supabase(df)

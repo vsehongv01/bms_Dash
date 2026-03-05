@@ -1,138 +1,165 @@
+import sys
+import asyncio
+import subprocess
+import json
+import os
 import streamlit as st
 import pandas as pd
 import ast
-import re
-from datetime import datetime
 import pytz
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
-import os
+from datetime import datetime, timedelta
+from dotenv import load_dotenv
+from supabase import create_client, Client
 
-# ==========================================
+# Windows 루프 정책 설정
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+st.set_page_config(layout="wide")
+
 # [1. 설정 및 데이터 로드]
-# ==========================================
-SPREADSHEET_NAME = "BMS_Dashboard_Data"
-CREDENTIALS_FILE = "credentials.json"
+load_dotenv()
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+TARGET_TABLE = "bms_orders"
 
-@st.cache_data(ttl=600) # 10분 캐시
-def load_data():
+@st.cache_data(ttl=601)
+def load_data(target_date_str):
     try:
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        credentials_path = os.path.join(base_dir, CREDENTIALS_FILE)
-        creds = ServiceAccountCredentials.from_json_keyfile_name(credentials_path, scope)
-        client = gspread.authorize(creds)
-        sheet = client.open(SPREADSHEET_NAME).get_worksheet(0)
-        data = sheet.get_all_records()
-        return pd.DataFrame(data) if data else pd.DataFrame()
+        supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        COLS = ["id", "createdAt", "status", "code", '"customer.name"', '"lens.left.skus"', '"lens.right.skus"',
+                '"optometry.data.optimal.left.sph"', '"optometry.data.optimal.left.cyl"',
+                '"optometry.data.optimal.right.sph"', '"optometry.data.optimal.right.cyl"']
+        target_dt = datetime.strptime(target_date_str, "%Y-%m-%d")
+        start_utc = (target_dt - timedelta(days=1)).strftime("%Y-%m-%dT00:00:00Z")
+        end_utc = (target_dt + timedelta(days=1)).strftime("%Y-%m-%dT23:59:59Z")
+        response = supabase.table(TARGET_TABLE).select(",".join(COLS)).gte("createdAt", start_utc).lte("createdAt", end_utc).execute()
+        return pd.DataFrame(response.data) if response.data else pd.DataFrame()
     except Exception as e:
-        st.error(f"데이터 로드 중 오류 발생: {e}")
+        st.error(f"데이터 로드 오류: {e}")
         return pd.DataFrame()
 
-# ==========================================
-# [2. 여벌 렌즈 추출 핵심 로직]
-# ==========================================
+# [2. 자동 주문 실행 로직 - 선택 데이터 합산 강화]
+def execute_nikon_order(selected_rows):
+    if selected_rows.empty:
+        st.warning("주문할 항목을 선택해주세요.")
+        return
+
+    # 렌즈 종류별로 데이터를 모으는 저장소
+    # { "렌즈SKU문자열": {"lens_info": 리스트, "orders_map": {(sph, cyl): 합산수량}} }
+    orders_by_lens = {}
+
+    for _, row in selected_rows.iterrows():
+        # 왼쪽(L)과 오른쪽(R) 각각 검사하여 합산
+        for side_sku, side_dosu in [('L렌즈', 'L도수 (SPH/CYL/AXIS)'), ('R렌즈', 'R도수 (SPH/CYL/AXIS)')]:
+            sku_val = row.get(side_sku, '')
+            if pd.isna(sku_val) or str(sku_val).strip() in ['', 'nan', 'None']:
+                continue
+                
+            try:
+                # 문자열 리스트를 실제 객체로 변환
+                sku_list = ast.literal_eval(str(sku_val)) if isinstance(sku_val, str) else sku_val
+            except:
+                sku_list = [str(sku_val)]
+                
+            # 렌즈 구성을 고유 키로 생성
+            lens_key = str(sku_list)
+            
+            if lens_key not in orders_by_lens:
+                orders_by_lens[lens_key] = {"lens_info": sku_list, "orders_map": {}}
+            
+            # 도수 추출 및 합산
+            dosu_parts = str(row.get(side_dosu, "")).split('/')
+            if len(dosu_parts) >= 2:
+                sph = dosu_parts[0].strip()
+                cyl = dosu_parts[1].strip()
+                if sph not in ['None', 'nan', '', '0', '0.0', '0.00']:
+                    k = (sph, cyl)
+                    # 동일 도수가 이미 있다면 수량 +1, 없으면 1로 시작
+                    orders_by_lens[lens_key]["orders_map"][k] = orders_by_lens[lens_key]["orders_map"].get(k, 0) + 1
+
+    # 최종 전송 데이터 구성 (중복 없이 제품별 1개씩)
+    payload = []
+    for lens_data in orders_by_lens.values():
+        if not lens_data["orders_map"]: continue
+        
+        payload.append({
+            "lens_info": lens_data["lens_info"],
+            "orders": [{"sph": k[0], "cyl": k[1], "qty": v} for k, v in lens_data["orders_map"].items()]
+        })
+
+    if not payload:
+        st.warning("합산된 유효 주문 데이터가 없습니다.")
+        return
+        
+    # 가공된 리스트를 JSON 저장
+    with open("temp_order.json", "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False)
+
+    with st.status("[INFO] 동일 제품 합산 완료. 자동 주문을 시작합니다...", expanded=True):
+        try:
+            flags = getattr(subprocess, 'CREATE_NEW_CONSOLE', 0x10) if sys.platform == 'win32' else 0
+            subprocess.Popen([sys.executable, "essilor_auto.py", "temp_order.json"], creationflags=flags)
+            st.success("에실로 자동화 창이 실행되었습니다. 제품별 일괄 입력 후 장바구니에 담깁니다.")
+        except Exception as e:
+            st.error(f"실행 실패: {e}")
+
+# [3. UI 및 필터링 로직]
 def extract_lens_info(sku_str):
-    """SKU 문자열에서 브랜드(회사)와 렌즈구분(ss, ssp 등)을 추출합니다."""
-    if pd.isna(sku_str) or str(sku_str).strip() == "" or str(sku_str).lower() == 'nan':
-        return None, None
     try:
         s_list = ast.literal_eval(sku_str) if isinstance(sku_str, str) else sku_str
         if isinstance(s_list, list) and len(s_list) > 0:
-            main_sku = str(s_list[0])
-            parts = main_sku.split('-')
-            if len(parts) >= 2:
-                brand = parts[0].strip().lower() # 예: chemi
-                lens_cat = parts[1].strip().lower() # 예: ss, ssp, pi 등
-                return brand, lens_cat
-    except Exception:
-        pass
+            parts = str(s_list[0]).split('-')
+            # RX(주문형) 제품 제외 필터
+            if len(parts) >= 3 and 'rx' in parts[2].lower(): return None, None
+            if len(parts) >= 2: return parts[0].lower(), parts[1].lower()
+    except: pass
     return None, None
 
-def get_today_stock_orders(df):
-    """오늘 접수된 여벌렌즈(ss, ssp) 주문을 회사별로 분류하여 반환합니다."""
+def get_stock_orders_by_date(df, target_date_str):
     if df.empty: return {}
-
-    # 1. 당일 데이터 필터링 (한국 시간 KST 기준)
     kst = pytz.timezone('Asia/Seoul')
-    today_date = datetime.now(kst).strftime('%Y-%m-%d')
+    df['date_only'] = pd.to_datetime(df['createdAt'], utc=True).dt.tz_convert(kst).dt.strftime('%Y-%m-%d')
+    df_target = df[df['date_only'] == target_date_str].copy()
     
-    # createdAt을 KST 기준으로 변환 후 날짜 추출 (에러 발생 시 무시)
-    df['date_only'] = pd.to_datetime(df['createdAt'], errors='coerce', utc=True).dt.tz_convert(kst).dt.strftime('%Y-%m-%d')
-    df_today = df[df['date_only'] == today_date].copy()
-
-    if df_today.empty: return {}
-
-    # 2. 주문 타입 필터링 (lensType == custom or as)
-    if 'lensType' in df_today.columns:
-        df_today = df_today[df_today['lensType'].astype(str).str.lower().isin(['custom', 'as'])]
-
-    # 3. ss / ssp 필터링 및 회사별 그룹화
-    grouped_orders = {}
-
-    for idx, row in df_today.iterrows():
+    grouped = {}
+    for _, row in df_target.iterrows():
         l_brand, l_cat = extract_lens_info(row.get('lens.left.skus', ''))
         r_brand, r_cat = extract_lens_info(row.get('lens.right.skus', ''))
-
-        is_l_stock = l_cat in ['ss', 'ssp']
-        is_r_stock = r_cat in ['ss', 'ssp']
-
-        if is_l_stock or is_r_stock:
-            # L렌즈가 여벌이면 L브랜드 기준, 아니면 R브랜드 기준 (일반적으로 양안 브랜드는 동일함)
-            target_brand = l_brand if is_l_stock else r_brand
-            
-            # 브랜드 이름 한글화 (보기 좋게)
-            brand_name_map = {"chemi": "케미", "zeiss": "자이스", "nikon": "니콘", "tokai": "토카이", "breezm": "브리즘", "dagas": "다가스"}
-            display_brand = brand_name_map.get(target_brand, target_brand.upper() if target_brand else "기타")
-
-            if display_brand not in grouped_orders:
-                grouped_orders[display_brand] = []
-            
-            # 필요한 데이터만 가공해서 저장
-            grouped_orders[display_brand].append({
+        
+        # 여벌 렌즈(ss, ssp)만 그룹화
+        if l_cat in ['ss', 'ssp'] or r_cat in ['ss', 'ssp']:
+            brand = {"chemi": "케미", "zeiss": "자이스", "nikon": "니콘"}.get(l_brand or r_brand, "기타")
+            if brand not in grouped: grouped[brand] = []
+            grouped[brand].append({
+                "선택": False,
                 "주문번호": row.get('code', ''),
                 "이름": row.get('customer.name', ''),
                 "L렌즈": row.get('lens.left.skus', ''),
                 "R렌즈": row.get('lens.right.skus', ''),
-                "L도수 (SPH/CYL/AXIS)": f"{row.get('optometry.data.optimal.left.sph','')} / {row.get('optometry.data.optimal.left.cyl','')} / {row.get('optometry.data.optimal.left.axi','')}",
-                "R도수 (SPH/CYL/AXIS)": f"{row.get('optometry.data.optimal.right.sph','')} / {row.get('optometry.data.optimal.right.cyl','')} / {row.get('optometry.data.optimal.right.axi','')}",
+                "L도수 (SPH/CYL/AXIS)": f"{row.get('optometry.data.optimal.left.sph','')} / {row.get('optometry.data.optimal.left.cyl','')}",
+                "R도수 (SPH/CYL/AXIS)": f"{row.get('optometry.data.optimal.right.sph','')} / {row.get('optometry.data.optimal.right.cyl','')}"
             })
+    return grouped
 
-    return grouped_orders
-
-# ==========================================
-# [3. 메인 화면 UI]
-# ==========================================
 def main():
-    st.title("🤖 주문 자동화")
-    st.markdown("당일 생성된 주문 중 **여벌렌즈(ss, ssp)**만 추출하여 제조사별로 분류합니다.")
-    st.divider()
-
-    df = load_data()
-
-    if st.button("🚀 당일 여벌렌즈 자동주문 조회", type="primary", use_container_width=True):
-        if df.empty:
-            st.warning("구글 시트에서 데이터를 불러오지 못했습니다.")
-            return
-
-        with st.spinner("당일 주문 데이터를 분석 중입니다..."):
-            grouped_data = get_today_stock_orders(df)
-            
-        if not grouped_data:
-            st.info("오늘 접수된 여벌렌즈(ss, ssp) 주문 건이 없습니다.")
-        else:
-            st.success(f"총 {sum(len(v) for v in grouped_data.values())}건의 여벌렌즈 주문을 찾았습니다!")
-            
-            # 회사별로 탭을 만들어서 예쁘게 보여줌
-            tabs = st.tabs(list(grouped_data.keys()))
-            
-            for tab, brand in zip(tabs, grouped_data.keys()):
-                with tab:
-                    st.subheader(f"🏢 {brand} 발주 목록 ({len(grouped_data[brand])}건)")
-                    
-                    # 딕셔너리 리스트를 데이터프레임으로 변환하여 출력
-                    brand_df = pd.DataFrame(grouped_data[brand])
-                    st.dataframe(brand_df, use_container_width=False, width=1200, hide_index=True)
+    st.title("🤖 여벌렌즈 자동 발주 시스템")
+    date = st.date_input("📅 발주 날짜 선택", value=datetime.now(pytz.timezone('Asia/Seoul')))
+    
+    if st.button("🚀 데이터 조회", type="primary", use_container_width=True):
+        data = load_data(date.strftime('%Y-%m-%d'))
+        st.session_state['grouped_data'] = get_stock_orders_by_date(data, date.strftime('%Y-%m-%d'))
+    
+    if 'grouped_data' in st.session_state and st.session_state['grouped_data']:
+        tabs = st.tabs(list(st.session_state['grouped_data'].keys()))
+        for tab, brand in zip(tabs, st.session_state['grouped_data'].keys()):
+            with tab:
+                df_display = pd.DataFrame(st.session_state['grouped_data'][brand])
+                edited = st.data_editor(df_display, width="stretch", column_config={"선택": st.column_config.CheckboxColumn(default=False)}, hide_index=True, key=f"ed_{brand}")
+                
+                sel = edited[edited["선택"] == True]
+                if brand == "니콘" and st.button(f"🔵 에실로(니콘) 자동 합산 주문 ({len(sel)}건)"):
+                    execute_nikon_order(sel)
 
 if __name__ == "__main__":
     main()

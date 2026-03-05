@@ -1,9 +1,9 @@
 import streamlit as st
 import pandas as pd
 import altair as alt
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
 import os
+from dotenv import load_dotenv
+from supabase import create_client, Client
 import sys
 import subprocess
 import time
@@ -21,39 +21,69 @@ st.set_page_config(
 # ==========================================
 # [2. 설정 및 상수]
 # ==========================================
-SPREADSHEET_NAME = "BMS_Dashboard_Data"
-CREDENTIALS_FILE = "credentials.json"
-# [수정] BMS 메인 주소
+load_dotenv()
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+TARGET_TABLE = "bms_orders"
 BMS_MAIN_URL = "https://bms.breezm.com/order"
 
 # ==========================================
 # [3. 데이터 로드 함수]
 # ==========================================
-@st.cache_data(ttl=6000)
+@st.cache_data(ttl=600, show_spinner=False)
 def load_data():
-    """구글 시트에서 전체 데이터를 로드합니다."""
     try:
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        credentials_path = os.path.join(base_dir, CREDENTIALS_FILE)
-        
-        creds = ServiceAccountCredentials.from_json_keyfile_name(credentials_path, scope)
-        client = gspread.authorize(creds)
-        
-        try:
-            sheet = client.open(SPREADSHEET_NAME).get_worksheet(0)
-        except gspread.exceptions.SpreadsheetNotFound:
-            st.error(f"구글 시트 '{SPREADSHEET_NAME}'를 찾을 수 없습니다.")
+        if not SUPABASE_URL or not SUPABASE_KEY:
             return pd.DataFrame()
+        
+        supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        all_data = []
+        
+        # 🌟 핵심 1: 무거운 전체 열(*) 대신 대시보드에 표시할 필수 열만 콕 집어서 요청 (속도 수십 배 향상)
+        COLS = [
+            "id", "createdAt", "status", "code", "frameType", "lensType",
+            '"statusDetail.lensStaff"', '"statusDetail.frameStaff"', 
+            '"customer.name"', '"customer.contacts"',
+            '"frame.size"', '"frame.color"', '"frame.front"', '"frame.temple_color"', '"frame.temple"',
+            '"lens.left.skus"', '"lens.right.skus"',
+            '"optometry.data.optimal.left.sph"', '"optometry.data.optimal.left.cyl"', '"optometry.data.optimal.left.axi"', '"optometry.data.optimal.left.add"', '"optometry.data.optimal.left.pd"',
+            '"optometry.data.optimal.right.sph"', '"optometry.data.optimal.right.cyl"', '"optometry.data.optimal.right.axi"', '"optometry.data.optimal.right.add"', '"optometry.data.optimal.right.pd"',
+            '"data.las.referenceId"', '"data.las.classification"', '"data.las.comment"',
+            '"data.fas.referenceId"', '"data.fas.classification"', '"data.fas.comment"'
+        ]
+        cols = ",".join(COLS)
+        
+        # 🌟 핵심 2: 1000개씩 나눠서 가져오기 (서버 과부하 원천 차단)
+        offset = 0
+        page_size = 1000
+        loading_text = st.empty()
+        
+        while True:
+            loading_text.text(f"⏳ 전체 과거 데이터를 불러오는 중입니다... ({offset}건 완료)")
             
-        data = sheet.get_all_records()
-        if not data:
-            return pd.DataFrame()
+            response = supabase.table(TARGET_TABLE)\
+                .select(cols)\
+                .order("id")\
+                .range(offset, offset + page_size - 1)\
+                .execute()
+                
+            data = response.data
+            if not data:
+                break
+                
+            all_data.extend(data)
             
-        return pd.DataFrame(data)
+            if len(data) < page_size:
+                break # 가져온 게 1000개 미만이면 마지막 페이지임
+                
+            offset += page_size
+            
+        loading_text.empty() # 완료되면 안내 문구 삭제
+        
+        return pd.DataFrame(all_data) if all_data else pd.DataFrame()
+        
     except Exception as e:
-        st.error(f"데이터 로드 중 오류 발생: {e}")
+        st.error(f"전체 데이터 로드 중 오류: {e}")
         return pd.DataFrame()
 
 # ==========================================
@@ -319,7 +349,7 @@ def main():
     # [1. 표 영역 (Data Editor로 복귀 & 팝업 체크박스)]
     # ---------------------------------------------------------
     st.markdown(f"**미확인 건수: {len(display_df)}건**")
-    st.caption("✨ '팝업'에 체크하면 자동으로 브라우저가 열리고 해당 주문을 조회합니다. (로그인: ID=담당자명, PW=breeword)")
+    st.caption("✨ '팝업'에 체크하면 자동으로 브라우저가 열리고 해당 주문을 조회합니다. (로그인: ID=담당자명, PW=qlaflqjsgh)")
     st.divider()
 
     if 'current_page' not in st.session_state: st.session_state['current_page'] = 1
@@ -387,7 +417,7 @@ def main():
             
             # [핵심] 하드코딩된 로그인 정보 사용
             auto_id = selected_staff
-            auto_pw = "breeword"
+            auto_pw = "qlaflqjsgh"
             
             if open_bms_popup:
                 st.toast(f"🚀 {cust_name} ({code_val}) 조회 중...", icon="🤖")

@@ -1,0 +1,315 @@
+{
+  "createdById": null,
+  "createdName": null,
+  "updatedById": 100,
+  "updatedName": "joel",
+  "id": 109538,
+  "code": "DT-2409-0045",
+  "storeId": 12,
+  "customerId": 27633,
+  "reservationId": [
+    213716
+  ],
+  "useReference": true,
+  "referenceOrderId": [],
+  "frameType": "as",
+  "lensType": "none",
+  "frameSurveyId": null,
+  "scanId": null,
+  "lensSurveyId": null,
+  "optometryId": 46754,
+  "frame": {
+    "size": "frame_size_7",
+    "color": "pa_front_color_black",
+    "front": "front_collin",
+    "price": 0,
+    "temple": "temple_wiretitan",
+    "comment": "",
+    "nosepad": "nosepad_round",
+    "tip_color": null,
+    "temple_color": "wiretitan_temple_color_gunmetal"
+  },
+  "lens": {},
+  "orderedDetail": {
+    "placements": [
+      "front"
+    ]
+  },
+  "other": {},
+  "paymentDetail": {
+    "finalPrice": 0,
+    "regularPrice": 0,
+    "remainAmount": 0,
+    "discountPrice": 0,
+    "totalPaymentAmount": 0
+  },
+  "deliveryDetail": {},
+  "statusDetail": {
+    "frameStaff": "koopa",
+    "PreSubmitStartDate": "2024-09-26T00:00:00.000Z"
+  },
+  "data": {},
+  "airtable": {
+    "id": "rec3Ot7AOVvP9XvgI",
+    "bmsId": 109538,
+    "Status": "Delivered",
+    "Temple": "wire_gun metal",
+    "매장": "DT",
+    "성별": "M",
+    "FAS구분": "피팅",
+    "고객명": "조득환",
+    "모델명": "Collin / W Boston 01",
+    "브릿지": "없음",
+    "사이즈": "7_XL",
+    "코패드": "원형",
+    "Temple Tip": "CLEAR",
+    "created_at": "2024-09-26T05:26:59.000Z",
+    "updated_at": "2024-09-27T01:55:34.000Z",
+    "거래구분": [
+      "AS-Optician"
+    ],
+    "고객번호": "2305445",
+    "모델컬러": "BLACK",
+    "생년월일": "1994-06-12",
+    "예약채널": [
+      "웹사이트"
+    ],
+    "전화번호": "010-7100-5697",
+    "주문번호": "DT2409227A",
+    "주문유형": "A",
+    "주문일자": "2024-09-26",
+    "파츠컬러": "없음",
+    "출고소요일": {
+      "specialValue": "NaN"
+    },
+    "Consultant_Order": [
+      "Koopa"
+    ],
+    "AS원주문번호": [
+      "PG2305377A"
+    ],
+    "AS원주문번호id": [
+      "recqCDs9vioKVCaSt"
+    ],
+    "Order Comment (설계)": "AS Comment : 와이어힌지 틀어짐 밴드 쓰고 운동하신다고  와이어특성상 잘휘짐 말씀드림",
+    "주문번호_끝자리": "227",
+    "주문일자(Logbook_DT)": [
+      "recOP1S586Yi2p5de"
+    ]
+  },
+  "status": "Delivered",
+  "note": null,
+  "createdAt": "2024-09-26T00:00:00.000Z",
+  "updatedAt": "2026-01-17T05:56:52.360Z",
+  "customer": {
+    "id": 27633,
+    "name": "조득환",
+    "lastName": null,
+    "gender": "male",
+    "birthday": "1994-06-12T00:00:00.000Z",
+    "isSolar": true,
+    "channel": null,
+    "referrer": null,
+    "preferredContact": null,
+    "preferredMethod": null,
+    "data": {
+      "crm": {
+        "lastASDate": null,
+        "lastASItem": null,
+        "lastVisitDate": "2024-09-26",
+        "firstVisitDate": "2023-05-02",
+        "lastRefundDate": null,
+        "lastRefundItem": null,
+        "lastPaymentDate": "2023-05-02",
+        "lastPaymentItem": "FL",
+        "firstPaymentDate": "2023-05-02"
+      },
+      "race": [
+        "korean"
+      ],
+      "order": {
+        "as": 3,
+        "total": 2,
+        "closed": 0,
+        "canceled": 0,
+        "beforePickup": 0
+      },
+      "payment": {
+        "total": 566000,
+        "pending": 0
+      },
+      "reservation": {
+        "total": 1,
+        "closed": 1,
+        "noShow": 0,
+        "canceled": 0,
+        "beforeVisit": 0
+      }
+    },
+    "status": "active",
+    "note": null,
+    "isMarked": false,
+    "createdAt": "2023-05-02T00:00:00.000Z",
+    "updatedAt": "2024-09-26T00:00:00.000Z",
+    "contacts": [
+      {
+        "id": 52938,
+        "customerId": 27633,
+        "type": "phone",
+        "kind": "mobile",
+        "data": {
+          "value": "010-7100-5697",
+          "country": "KR",
+          "formatted": "010-7100-5697",
+          "isVerified": true
+        },
+        "isPrimary": true,
+        "note": null,
+        "createdAt": "2024-10-31T15:34:58.059Z",
+        "updatedAt": "2024-10-31T15:34:58.059Z"
+      }
+    ],
+    "termAgreements": [
+      {
+        "id": 99333,
+        "customerId": 27633,
+        "termId": 1,
+        "storeId": 5,
+        "agreedAt": "2023-05-02T00:00:00.000Z",
+        "data": {},
+        "isCancel": false,
+        "canceledAt": null,
+        "createdAt": "2023-05-02T00:00:00.000Z",
+        "updatedAt": "2023-05-02T00:00:00.000Z"
+      },
+      {
+        "id": 99334,
+        "customerId": 27633,
+        "termId": 2,
+        "storeId": 5,
+        "agreedAt": "2023-05-02T00:00:00.000Z",
+        "data": {},
+        "isCancel": false,
+        "canceledAt": null,
+        "createdAt": "2023-05-02T00:00:00.000Z",
+        "updatedAt": "2023-05-02T00:00:00.000Z"
+      },
+      {
+        "id": 99335,
+        "customerId": 27633,
+        "termId": 3,
+        "storeId": 5,
+        "agreedAt": "2023-05-02T00:00:00.000Z",
+        "data": {},
+        "isCancel": false,
+        "canceledAt": null,
+        "createdAt": "2023-05-02T00:00:00.000Z",
+        "updatedAt": "2023-05-02T00:00:00.000Z"
+      }
+    ]
+  },
+  "frameSurvey": null,
+  "scan": null,
+  "lensSurvey": null,
+  "optometry": {
+    "id": 46754,
+    "customerId": 27633,
+    "storeId": 5,
+    "deviceId": null,
+    "deviceVersion": null,
+    "name": null,
+    "mobile": null,
+    "email": null,
+    "gender": null,
+    "birthday": null,
+    "data": {
+      "full": {
+        "reason": "noData"
+      },
+      "note": "",
+      "current": {
+        "reason": "noData"
+      },
+      "optimal": {
+        "left": {
+          "cv": "1.0",
+          "pd": "34.5",
+          "add": "0",
+          "axi": "100",
+          "cyl": "-0.75",
+          "sph": "-0.75",
+          "phni": false,
+          "prismHor": "0",
+          "prismVer": "0"
+        },
+        "right": {
+          "cv": "1.0",
+          "pd": "34.5",
+          "add": "0",
+          "axi": "80",
+          "cyl": "-0.50",
+          "sph": "-0.75",
+          "phni": false,
+          "prismHor": "0",
+          "prismVer": "0"
+        }
+      },
+      "prescription": {}
+    },
+    "status": "valid",
+    "note": null,
+    "createdAt": "2023-05-02T00:00:00.000Z",
+    "updatedAt": "2023-05-02T00:00:00.000Z"
+  },
+  "orderItems": [
+    {
+      "createdById": null,
+      "createdName": null,
+      "updatedById": null,
+      "updatedName": null,
+      "id": 147411,
+      "code": "DT-2409-025A",
+      "storeId": 12,
+      "orderId": 109538,
+      "productInfoSku": "front_collin",
+      "skuExtend": null,
+      "orderDetail": {
+        "skus": {
+          "front_collin": [
+            "frame_size_7",
+            "pa_front_color_black"
+          ],
+          "nosepad_round": [],
+          "temple_wiretitan": [
+            "wiretitan_temple_color_gunmetal"
+          ]
+        },
+        "type": "front",
+        "price": 0,
+        "comment": "",
+        "quantity": 1
+      },
+      "modelingDetail": {},
+      "productionDetail": {
+        "material": "polyamid"
+      },
+      "paymentDetail": {
+        "finalPrice": 0,
+        "regularPrice": 0,
+        "discountPrice": 0
+      },
+      "statusDetail": {
+        "PreSubmitEndDate": "2024-09-26T00:00:00.000Z",
+        "PreSubmitStartDate": "2024-09-26T00:00:00.000Z",
+        "PreModelingStartDate": "2024-09-26T00:00:00.000Z"
+      },
+      "stockDetail": {},
+      "data": {},
+      "status": "Delivered",
+      "state": "ORDERED",
+      "note": null,
+      "createdAt": "2024-09-26T00:00:00.000Z",
+      "updatedAt": "2024-09-26T00:00:00.000Z"
+    }
+  ]
+}
