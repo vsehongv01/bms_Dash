@@ -153,7 +153,13 @@ def process_new_data(df, selected_staff):
             import ast
             c_list = ast.literal_eval(c_str) if c_str.startswith('[') else c_data
             if isinstance(c_list, list):
-                return ", ".join([str(item.get('value', '')) for item in c_list if isinstance(item, dict) and 'value' in item])
+                phones = []
+                for item in c_list:
+                    if isinstance(item, dict):
+                        val = item.get('data', {}).get('value') if isinstance(item.get('data'), dict) else None
+                        if not val: val = item.get('value')
+                        if val: phones.append(str(val))
+                if phones: return ", ".join(phones)
         except Exception: pass
             
         try:
@@ -161,7 +167,13 @@ def process_new_data(df, selected_staff):
             clean_str = c_str.replace("'", '"').replace("True", "true").replace("False", "false")
             c_list = json.loads(clean_str)
             if isinstance(c_list, list):
-                return ", ".join([str(item.get('value', '')) for item in c_list if isinstance(item, dict) and 'value' in item])
+                phones = []
+                for item in c_list:
+                    if isinstance(item, dict):
+                        val = item.get('data', {}).get('value') if isinstance(item.get('data'), dict) else None
+                        if not val: val = item.get('value')
+                        if val: phones.append(str(val))
+                if phones: return ", ".join(phones)
         except Exception: pass
             
         import re
