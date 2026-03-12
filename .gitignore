@@ -12,6 +12,7 @@ ENV/
 
 # Sensitive Data
 credentials.json
+auth*.json
 
 # Data files
 *.xlsx
@@ -23,3 +24,5 @@ Thumbs.db
 
 # Chrome
 chrome_profile/
+
+pw-browsers/

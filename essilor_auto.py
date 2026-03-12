@@ -100,6 +100,32 @@ def main(payload_file):
         context = browser.new_context(storage_state="auth.json" if os.path.exists("auth.json") else None)
         page = context.new_page()
 
+        # 로그인 상태 검증 및 자동 로그인
+        print("[INFO] 로그인 상태를 확인합니다...")
+        page.goto("https://order.essilor.co.kr/order/order.php?order_type=B", timeout=60000)
+        time.sleep(2)
+        
+        if "login" in page.url or page.locator('#web_id').count() > 0:
+            print("[INFO] 세션이 만료되었거나 로그인이 필요합니다. 로그인을 진행합니다.")
+            page.goto("https://order.essilor.co.kr/member/login.php")
+            page.fill('#web_id', "460163")
+            page.fill('#web_pwd', "dt460163!")
+            page.press('#web_pwd', "Enter")
+            
+            try:
+                page.wait_for_load_state("networkidle", timeout=10000)
+                time.sleep(2)
+            except:
+                pass
+                
+            if "login.php" not in page.url:
+                context.storage_state(path="auth.json")
+                print("[INFO] 로그인 성공! 세션이 저장되었습니다.")
+            else:
+                print("[ERROR] 로그인에 실패했습니다. 처리를 중단합니다.")
+                browser.close()
+                return
+
         for data in payload_list:
             try: process_single_product(page, data)
             except Exception as e: print(f"오류: {e}")

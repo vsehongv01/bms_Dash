@@ -22,43 +22,49 @@ load_dotenv()
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 TARGET_TABLE = "bms_orders"
-MAPPING_FILE = "lens_mapping.json"
+MAPPING_TABLE = "lens_mappings" # 서버 테이블 이름 (기존 JSON 대체)
 
 def get_supabase():
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 def load_all_mappings():
+    """서버(Supabase)에서 실시간 매핑 데이터 로드"""
     try:
-        if os.path.exists(MAPPING_FILE):
-            with open(MAPPING_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
+        supabase = get_supabase()
+        response = supabase.table(MAPPING_TABLE).select("sku_key, custom_name").execute()
+        if response.data:
+            return {item['sku_key']: item['custom_name'] for item in response.data}
         return {}
     except Exception as e:
-        print(f"로드 실패 디버그: {e}")
+        print(f"서버 데이터 로드 실패: {e}")
         return {}
 
 def save_to_server(sku_str, custom_name):
+    """서버에 매핑 데이터 저장 (Upsert)"""
     try:
-        mappings = load_all_mappings()
-        if not isinstance(mappings, dict): mappings = {}
-        mappings[sku_str] = custom_name
-        with open(MAPPING_FILE, 'w', encoding='utf-8') as f:
-            json.dump(mappings, f, ensure_ascii=False, indent=4)
+        supabase = get_supabase()
+        # RLS가 비활성화된 상태이므로 직접 upsert 가능
+        supabase.table(MAPPING_TABLE).upsert({
+            "sku_key": sku_str,
+            "custom_name": custom_name
+        }).execute()
         return True
     except Exception as e:
-        st.error(f"저장 중 오류 발생: {e}")
+        st.error(f"서버 저장 오류 발생: {e}")
         return False
 
 @st.cache_data(ttl=601)
-def load_data(target_date_str):
+def load_data(start_date_str, end_date_str):
     try:
         supabase = get_supabase()
         COLS = ["id", "createdAt", "status", "code", '"customer.name"', '"lens.left.skus"', '"lens.right.skus"',
                 '"optometry.data.optimal.left.sph"', '"optometry.data.optimal.left.cyl"',
-                '"optometry.data.optimal.right.sph"', '"optometry.data.optimal.right.cyl"']
-        target_dt = datetime.strptime(target_date_str, "%Y-%m-%d")
-        start_utc = (target_dt - timedelta(days=1)).strftime("%Y-%m-%dT00:00:00Z")
-        end_utc = (target_dt + timedelta(days=1)).strftime("%Y-%m-%dT23:59:59Z")
+                '"optometry.data.optimal.right.sph"', '"optometry.data.optimal.right.cyl"',
+                '"optometry.data.optimal.dist"', '"optometry.data.optimal.left.add"', '"optometry.data.optimal.right.add"']
+        start_dt = datetime.strptime(start_date_str, "%Y-%m-%d")
+        end_dt = datetime.strptime(end_date_str, "%Y-%m-%d")
+        start_utc = (start_dt - timedelta(days=1)).strftime("%Y-%m-%dT00:00:00Z")
+        end_utc = (end_dt + timedelta(days=1)).strftime("%Y-%m-%dT23:59:59Z")
         response = supabase.table(TARGET_TABLE).select(",".join(COLS)).gte("createdAt", start_utc).lte("createdAt", end_utc).execute()
         return pd.DataFrame(response.data) if response.data else pd.DataFrame()
     except Exception as e:
@@ -100,17 +106,18 @@ def execute_chemi_order(selected_rows):
                 if sph not in ['None', 'nan', '']:
                     orders_by_lens[lens_key]["dosu_map"][k] = orders_by_lens[lens_key]["dosu_map"].get(k, 0) + 1
 
-    st.subheader("제품 명칭 확인 및 서버 저장")
+    st.subheader("🌐 제품 명칭 확인 및 서버 저장")
     for l_key, l_data in orders_by_lens.items():
         current_name = get_lens_display_name(l_data["sku_list"], all_mappings)
         col1, col2 = st.columns([4, 1])
         new_name = col1.text_input(f"SKU: {l_key}", value=current_name, key=f"in_{l_key}")
         if col2.button("서버 저장", key=f"sv_{l_key}"):
             if save_to_server(l_key, new_name):
-                st.success(f"저장 완료: {new_name}")
-                st.toast(f"저장 완료!", icon='✅')
+                st.success(f"서버에 저장되었습니다: {new_name}")
+                st.toast(f"저장 성공!", icon='✅')
 
     msg_lines = [f"[케미 여벌 발주 요청] - {datetime.now().strftime('%m/%d %H:%M')}", "--------------------"]
+    # 최신 매핑 데이터로 메시지 생성
     final_mappings = load_all_mappings()
     for l_key, l_data in orders_by_lens.items():
         p_name = get_lens_display_name(l_data["sku_list"], final_mappings)
@@ -121,7 +128,7 @@ def execute_chemi_order(selected_rows):
     st.divider()
     st.code("\n".join(msg_lines), language="text")
 
-# [4. 자이스/니콘 자동 주문 로직 (이름 포함 로직으로 수정됨!)]
+# [4. 자이스/니콘 자동 주문 로직 (사장님 원본 합산 로직 유지)]
 def execute_auto_order(selected_rows, brand_name):
     if selected_rows.empty:
         st.warning("항목을 선택해주세요.")
@@ -130,7 +137,7 @@ def execute_auto_order(selected_rows, brand_name):
     orders_by_lens = {}
     
     for _, row in selected_rows.iterrows():
-        customer_name = str(row.get('이름', '')).strip() # 테이블에서 고객 이름 추출
+        customer_name = str(row.get('이름', '')).strip()
         
         for side, dosu in [('L렌즈', 'L도수 (SPH/CYL/AXIS)'), ('R렌즈', 'R도수 (SPH/CYL/AXIS)')]:
             sku_val = row.get(side, '')
@@ -146,14 +153,12 @@ def execute_auto_order(selected_rows, brand_name):
             dosu_parts = str(row.get(dosu, "")).split('/')
             if len(dosu_parts) >= 2:
                 sph, cyl = dosu_parts[0].strip(), dosu_parts[1].strip()
-                if sph not in ['None', 'nan', '', '0', '0.00']:
+                if sph not in ['None', 'nan', '']:  # '0'과 '0.00'을 제거하여 평면 도수도 포함시킴
                     k = (sph, cyl)
                     
-                    # 도수 키(k)가 없으면 초기화 (수량 0, 이름 리스트 빈 배열)
                     if k not in orders_by_lens[lens_key]["orders_map"]:
                         orders_by_lens[lens_key]["orders_map"][k] = {"qty": 0, "names": []}
                     
-                    # 수량 증가 및 고객 이름 추가 (중복 방지)
                     orders_by_lens[lens_key]["orders_map"][k]["qty"] += 1
                     if customer_name and customer_name not in orders_by_lens[lens_key]["orders_map"][k]["names"]:
                         orders_by_lens[lens_key]["orders_map"][k]["names"].append(customer_name)
@@ -162,7 +167,6 @@ def execute_auto_order(selected_rows, brand_name):
     for d in orders_by_lens.values():
         if not d["orders_map"]: continue
         
-        # 이름 배열을 콤마(,)로 연결해서 하나의 문자열로 변환 (예: "홍길동, 김철수")
         orders_list = []
         for k, v in d["orders_map"].items():
             combined_names = ", ".join(v["names"])
@@ -174,8 +178,10 @@ def execute_auto_order(selected_rows, brand_name):
         st.warning("합산된 유효 데이터가 없습니다.")
         return
 
+    # 파일명 최종 매칭
     script_name = "zeiss_auto.py" if brand_name == "자이스" else "essilor_auto.py"
     temp_file = "temp_order_zeiss.json" if brand_name == "자이스" else "temp_order.json"
+    
     with open(temp_file, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False)
 
@@ -198,11 +204,11 @@ def extract_lens_info(sku_str):
     except: pass
     return None, None
 
-def get_stock_orders_by_date(df, target_date_str):
+def get_stock_orders_by_date(df, start_date_str, end_date_str):
     if df.empty: return {}
     kst = pytz.timezone('Asia/Seoul')
     df['date_only'] = pd.to_datetime(df['createdAt'], utc=True).dt.tz_convert(kst).dt.strftime('%Y-%m-%d')
-    df_target = df[df['date_only'] == target_date_str].copy()
+    df_target = df[(df['date_only'] >= start_date_str) & (df['date_only'] <= end_date_str)].copy()
     grouped = {}
     for _, row in df_target.iterrows():
         l_brand, l_cat = extract_lens_info(row.get('lens.left.skus', ''))
@@ -210,21 +216,58 @@ def get_stock_orders_by_date(df, target_date_str):
         if l_cat in ['ss', 'ssp'] or r_cat in ['ss', 'ssp']:
             brand = {"chemi": "케미", "zeiss": "자이스", "nikon": "니콘"}.get(l_brand or r_brand, "기타")
             if brand not in grouped: grouped[brand] = []
+            
+            dist = str(row.get('optometry.data.optimal.dist', '')).strip()
+            
+            l_sph_val = row.get('optometry.data.optimal.left.sph', '')
+            l_cyl_val = row.get('optometry.data.optimal.left.cyl', '')
+            r_sph_val = row.get('optometry.data.optimal.right.sph', '')
+            r_cyl_val = row.get('optometry.data.optimal.right.cyl', '')
+            
+            # dist가 '∞'이 아니고, 값이 존재할 때만 ADD 값을 SPH에 더함
+            if dist != '∞' and dist != 'nan' and dist != 'None' and dist != '':
+                try:
+                    l_add = float(row.get('optometry.data.optimal.left.add', 0) or 0)
+                    if l_sph_val not in ['', 'nan', 'None']:
+                        l_sph_val = f"{(float(l_sph_val) + l_add):.2f}"
+                        if float(l_sph_val) > 0 and not l_sph_val.startswith('+'):
+                             l_sph_val = f"+{l_sph_val}"
+                except: pass
+                
+                try:
+                    r_add = float(row.get('optometry.data.optimal.right.add', 0) or 0)
+                    if r_sph_val not in ['', 'nan', 'None']:
+                        r_sph_val = f"{(float(r_sph_val) + r_add):.2f}"
+                        if float(r_sph_val) > 0 and not r_sph_val.startswith('+'):
+                             r_sph_val = f"+{r_sph_val}"
+                except: pass
+            
             grouped[brand].append({
                 "선택": False, "주문번호": row.get('code', ''), "이름": row.get('customer.name', ''),
                 "L렌즈": row.get('lens.left.skus', ''), "R렌즈": row.get('lens.right.skus', ''),
-                "L도수 (SPH/CYL/AXIS)": f"{row.get('optometry.data.optimal.left.sph','')} / {row.get('optometry.data.optimal.left.cyl','')}",
-                "R도수 (SPH/CYL/AXIS)": f"{row.get('optometry.data.optimal.right.sph','')} / {row.get('optometry.data.optimal.right.cyl','')}"
+                "L도수 (SPH/CYL/AXIS)": f"{l_sph_val} / {l_cyl_val}",
+                "R도수 (SPH/CYL/AXIS)": f"{r_sph_val} / {r_cyl_val}"
             })
     return grouped
 
 def main():
     st.title("🤖 여벌렌즈 자동 발주 시스템")
-    date = st.date_input("날짜 선택", value=datetime.now(pytz.timezone('Asia/Seoul')))
+    today = datetime.now(pytz.timezone('Asia/Seoul'))
+    date_range = st.date_input("조회 기간 선택", value=(today, today))
     
     if st.button("🚀 데이터 조회", type="primary"):
-        data = load_data(date.strftime('%Y-%m-%d'))
-        st.session_state['grouped_data'] = get_stock_orders_by_date(data, date.strftime('%Y-%m-%d'))
+        if isinstance(date_range, tuple) and len(date_range) == 2:
+            start_date, end_date = date_range
+        elif isinstance(date_range, tuple) and len(date_range) == 1:
+            start_date, end_date = date_range[0], date_range[0]
+        else:
+            start_date, end_date = date_range, date_range
+            
+        start_str = start_date.strftime('%Y-%m-%d')
+        end_str = end_date.strftime('%Y-%m-%d')
+        
+        data = load_data(start_str, end_str)
+        st.session_state['grouped_data'] = get_stock_orders_by_date(data, start_str, end_str)
     
     if 'grouped_data' in st.session_state and st.session_state['grouped_data']:
         brand_list = list(st.session_state['grouped_data'].keys())
@@ -245,7 +288,7 @@ def main():
                 elif brand == "니콘":
                     if st.button(f"🔵 니콘 주문 시작 ({len(sel)}건)", key="btn_nikon"): execute_auto_order(sel, "니콘")
     elif 'grouped_data' in st.session_state:
-        st.info("선택하신 날짜에 해당하는 여벌 렌즈 발주 데이터가 없습니다.")
+        st.info("선택하신 기간에 해당하는 여벌 렌즈 발주 데이터가 없습니다.")
 
 if __name__ == "__main__":
     main()
