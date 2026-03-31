@@ -99,12 +99,40 @@ def fetch_full_data(start_date):
         
     return pd.concat(valid_rows, ignore_index=True)
 
+def get_table_columns(supabase_url, supabase_key, table_name):
+    """Supabase 테이블의 현재 컬럼 목록을 가져옵니다."""
+    import requests
+    url = f"{supabase_url}/rest/v1/{table_name}?select=*&limit=1"
+    headers = {
+        "apikey": supabase_key,
+        "Authorization": f"Bearer {supabase_key}",
+        "Content-Type": "application/json"
+    }
+    try:
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            data = response.json()
+            if data:
+                return set(data[0].keys())
+        else:
+            print(f"⚠️ 테이블 컬럼 정보를 가져오지 못했습니다. (HTTP {response.status_code})")
+    except Exception as e:
+        print(f"⚠️ 테이블 컬럼 정보 확인 중 오류: {e}")
+    return None
+
 def sync_to_supabase(new_df):
     supabase = get_supabase_client()
     if not supabase:
         print("❌ Supabase 환경 변수가 설정되지 않았습니다.")
         return
         
+    # 0. 현재 Supabase 테이블의 컬럼 정보 확인
+    table_columns = get_table_columns(SUPABASE_URL, SUPABASE_KEY, TARGET_TABLE)
+    if table_columns:
+        print(f"✅ Supabase 테이블에서 {len(table_columns)}개의 컬럼을 확인했습니다.")
+    else:
+        print("⚠️ 테이블 컬럼 정보를 확인할 수 없어 필터링 없이 진행합니다.")
+
     # 1. 리스트 및 딕셔너리 형태를 문자열로 변환하고 글자 수 제한(30,000자) 걸기
     def clean_cell(x):
         if isinstance(x, (list, dict)): val = str(x)
@@ -135,6 +163,10 @@ def sync_to_supabase(new_df):
             
         clean_row = {}
         for k, v in row.items():
+            # Supabase 테이블에 없는 컬럼은 제외 (유동적 헤더 삭제 대응)
+            if table_columns and k not in table_columns:
+                continue
+                
             if v is None or (isinstance(v, float) and math.isnan(v)):
                 clean_row[k] = None
             elif isinstance(v, str) and (v.strip().lower() == "nan" or v == ""):

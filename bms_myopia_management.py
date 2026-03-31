@@ -2,18 +2,15 @@ import streamlit as st
 import pandas as pd
 import altair as alt
 import os
+import numpy as np
 from dotenv import load_dotenv
 from supabase import create_client, Client
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # ==========================================
 # [1. 페이지 설정]
 # ==========================================
-st.set_page_config(
-    page_title="근시관리",
-    page_icon="👁️",
-    layout="wide"
-)
+st.set_page_config(page_title="근시관리 시스템", page_icon="👁️", layout="wide")
 
 # ==========================================
 # [2. 설정 및 상수]
@@ -30,291 +27,266 @@ TARGET_TABLE = "bms_orders"
 def load_data():
     try:
         if not SUPABASE_URL or not SUPABASE_KEY:
-            st.error("Supabase URL or Key is missing.")
+            st.error("Supabase 설정이 누락되었습니다.")
             return pd.DataFrame()
         
         supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-        all_data = []
         
         COLS = [
             "id", "createdAt",
             '"customer.name"', '"customer.birthday"', '"customer.contacts"',
             '"lens.left.skus"', '"lens.right.skus"',
-            '"optometry.data.optimal.left.sph"', '"optometry.data.optimal.right.sph"'
+            '"optometry.data.optimal.left.sph"', '"optometry.data.optimal.left.cyl"', '"optometry.data.optimal.left.axi"',
+            '"optometry.data.optimal.right.sph"', '"optometry.data.optimal.right.cyl"', '"optometry.data.optimal.right.axi"'
         ]
         cols = ",".join(COLS)
         
         offset = 0
         page_size = 1000
+        all_data = []
         loading_text = st.empty()
         
         while True:
-            loading_text.text(f"⏳ 데이터 로드 중... ({offset}건 완료)")
-            
-            response = supabase.table(TARGET_TABLE)\
-                .select(cols)\
-                .order("id")\
-                .range(offset, offset + page_size - 1)\
-                .execute()
-                
+            loading_text.text(f"⏳ 데이터 로드 중... ({offset}건)")
+            response = supabase.table(TARGET_TABLE).select(cols).order("id").range(offset, offset + page_size - 1).execute()
             data = response.data
-            if not data:
-                break
-                
+            if not data: break
             all_data.extend(data)
-            
-            if len(data) < page_size:
-                break
-                
+            if len(data) < page_size: break
             offset += page_size
             
         loading_text.empty()
-        
         return pd.DataFrame(all_data) if all_data else pd.DataFrame()
-        
     except Exception as e:
-        st.error(f"데이터 로드 중 오류: {e}")
+        st.error(f"데이터 로드 오류: {e}")
         return pd.DataFrame()
 
 # ==========================================
-# [4. 나이 계산 및 필터링]
+# [4. 데이터 전처리 로직]
 # ==========================================
-def calculate_age(birthday_str):
-    if not birthday_str or pd.isna(birthday_str):
-        return None
+def safe_float(value):
     try:
-        # Check lengths or formats. Common formats: YYYY-MM-DD or YYYYMMDD
-        birthday_str = str(birthday_str).strip()
-        # Some simple cleaning if it contains timezone info
-        if 'T' in birthday_str:
-            birthday_str = birthday_str.split('T')[0]
-            
-        bday = pd.to_datetime(birthday_str, errors='coerce')
-        if pd.isna(bday):
-            return None
-            
+        if value is None or str(value).strip() == "": return 0.0
+        return float(value)
+    except:
+        return 0.0
+
+def calculate_age(birthday_str):
+    if not birthday_str or pd.isna(birthday_str): return None
+    try:
+        bday_dt = pd.to_datetime(str(birthday_str).split('T')[0])
         today = pd.Timestamp.today()
-        # Calculate age
-        age = today.year - bday.year - ((today.month, today.day) < (bday.month, bday.day))
-        return age
-    except Exception:
-        return None
+        return today.year - bday_dt.year - ((today.month, today.day) < (bday_dt.month, bday_dt.day))
+    except: return None
 
 def process_myopia_data(df):
-    if df.empty:
-        return pd.DataFrame(), pd.DataFrame()
-        
-    # Calculate age
-    df['age'] = df['customer.birthday'].apply(calculate_age)
+    if df.empty: return pd.DataFrame(), pd.DataFrame()
     
-    # Filter for age <= 17
+    df['age'] = df['customer.birthday'].apply(calculate_age)
     df_youth = df[df['age'] <= 17].copy()
     
-    if df_youth.empty:
-        return df_youth, pd.DataFrame()
-        
-    # Helper to check for myopia control lens ('sim' in skus)
     def is_myopia_control(row):
         l_skus = str(row.get('lens.left.skus', '')).lower()
         r_skus = str(row.get('lens.right.skus', '')).lower()
-        
         return 'sim' in l_skus or 'sim' in r_skus
         
     df_youth['is_myopia_control'] = df_youth.apply(is_myopia_control, axis=1)
-    
-    # Myopia control lens users
     df_myopia_control = df_youth[df_youth['is_myopia_control']].copy()
-    # Format data for display
+
     def format_row(row):
         createdAt = row.get('createdAt', '')
-        date_str = pd.to_datetime(createdAt, errors='coerce').strftime('%Y-%m-%d') if createdAt else ""
-        
-        # Extract phone from contacts for better uniqueness
-        contacts_raw = str(row.get('customer.contacts', ''))
-        # Using a very simple extraction or just using the raw string if parsing fails
-        # In a real app we might parse the JSON, but raw string is often enough for a unique hash
-        uid = f"{row.get('customer.name', '')}_{contacts_raw}"
-        
+        date_dt = pd.to_datetime(createdAt, errors='coerce')
         return {
-            'uid': uid,
-            'id': row.get('id', ''),
+            'uid': f"{row.get('customer.name', '')}_{row.get('customer.contacts', '')}",
             '이름': row.get('customer.name', ''),
             '나이': row.get('age', ''),
             '생년월일': row.get('customer.birthday', ''),
-            '접수일': date_str,
-            'L렌즈 SKUs': str(row.get('lens.left.skus', '')).replace('[', '').replace(']', '').replace("'", ""),
-            'R렌즈 SKUs': str(row.get('lens.right.skus', '')).replace('[', '').replace(']', '').replace("'", ""),
-            'L SPH': row.get('optometry.data.optimal.left.sph', ''),
-            'R SPH': row.get('optometry.data.optimal.right.sph', '')
+            '접수일': date_dt.strftime('%Y-%m-%d') if not pd.isna(date_dt) else "",
+            'date_obj': date_dt,
+            'year_month': date_dt.strftime('%Y-%m') if not pd.isna(date_dt) else "",
+            'L SPH': safe_float(row.get('optometry.data.optimal.left.sph')),
+            'L CYL': safe_float(row.get('optometry.data.optimal.left.cyl')),
+            'L AXI': safe_float(row.get('optometry.data.optimal.left.axi')),
+            'R SPH': safe_float(row.get('optometry.data.optimal.right.sph')),
+            'R CYL': safe_float(row.get('optometry.data.optimal.right.cyl')),
+            'R AXI': safe_float(row.get('optometry.data.optimal.right.axi'))
         }
         
     view_youth = pd.DataFrame([format_row(row) for _, row in df_youth.iterrows()])
     view_myopia = pd.DataFrame([format_row(row) for _, row in df_myopia_control.iterrows()])
-    
-    # Sort by date descending if not empty
-    if not view_youth.empty and '접수일' in view_youth.columns:
-        view_youth = view_youth.sort_values(by='접수일', ascending=True).reset_index(drop=True)
-    if not view_myopia.empty and '접수일' in view_myopia.columns:
-        view_myopia = view_myopia.sort_values(by='접수일', ascending=True).reset_index(drop=True)
-        
     return view_youth, view_myopia
 
 # ==========================================
-# [4.5 UI 헬퍼 함수]
+# [5. 시각화 로직 - 논문 억제율 반영 및 연간 -0.80D 기준]
 # ==========================================
-def render_grouped_table(df, page=1, items_per_page=10):
-    if df.empty:
-        st.info("데이터가 없습니다.")
-        return 0
-        
-    # Group by uid
-    grouped = df.groupby('uid')
+def draw_eye_chart(user_df, side, birthday, age, efficacy_rate, lens_name):
+    user_df = user_df.sort_values('date_obj')
+    first_visit = user_df.iloc[0]['date_obj']
+    base_sph = user_df.iloc[0][f'{side} SPH']
+    side_name = "우안(R)" if side == 'R' else "좌안(L)"
     
-    # We want to show the EARLIEST record in the main line, and the rest in the history
-    unique_records = []
+    # --- 근시 진행 상수 설정 (원장님 지정) ---
+    # 일반 단초점 렌즈 착용 시 평균 진행: 연간 -0.80D (6개월당 -0.40D)
+    NORMAL_PROG_6MO = -0.40
+    # 선택된 렌즈의 억제 효과를 반영한 예상 진행 속도
+    TREATED_PROG_6MO = NORMAL_PROG_6MO * (1 - efficacy_rate)
     
-    for uid, group in grouped:
-        # Since we sorted ascending earlier, the first row is the earliest
-        earliest = group.iloc[0]
-        history = group.iloc[1:]
-        
-        unique_records.append({
-            'earliest': earliest,
-            'history': history,
-            'count': len(group)
-        })
-        
-    # Sort unique records by earliest date descending for display
-    unique_records.sort(key=lambda x: str(x['earliest']['접수일']) if x['earliest']['접수일'] else "", reverse=True)
+    # 차트용 데이터 필터링 (같은 달인 경우 절대값이 큰 SPH 선택)
+    real_records = user_df.copy()
+    real_records['abs_sph'] = real_records[f'{side} SPH'].abs()
+    chart_real_df = real_records.sort_values(by=['year_month', 'abs_sph'], ascending=[True, False]).drop_duplicates('year_month')
     
-    total_items = len(unique_records)
-    total_pages = max(1, (total_items - 1) // items_per_page + 1)
+    # 16세 타겟 날짜 계산
+    try:
+        bday_dt = pd.to_datetime(birthday)
+    except:
+        bday_dt = first_visit - timedelta(days=365 * (age if age else 10))
+    stop_date = bday_dt + timedelta(days=365 * 16)
     
-    # Pagination slicing
-    start_idx = int(page - 1) * int(items_per_page)
-    end_idx = start_idx + int(items_per_page)
-    paged_records = unique_records[start_idx:end_idx]
+    timeline = []
+    curr = first_visit
+    while curr <= stop_date:
+        timeline.append(curr)
+        curr += timedelta(days=182.5) # 정확히 반년 단위
     
-    for record in paged_records:
-        earliest = record['earliest']
-        history = record['history']
-        count = record['count']
+    plot_data = []
+    for dt in timeline:
+        half_years = (dt - first_visit).days / 182.5
         
-        name = earliest['이름']
-        age = earliest['나이']
-        date_str = earliest['접수일']
+        # 시뮬레이션 계산
+        norm_sph = base_sph + (half_years * NORMAL_PROG_6MO)
+        exp_sph = base_sph + (half_years * TREATED_PROG_6MO)
         
-        expander_title = f"👤 {name} (나이: {age}세) | 최초 검안일: {date_str} | 총 주문 건수: {count}건"
-        
-        with st.expander(expander_title):
-            # Show original record
-            st.markdown(f"**최초 기록 ({date_str})**")
-            st.dataframe(pd.DataFrame([earliest]).drop(columns=['uid', 'id']), use_container_width=True, hide_index=True)
-            
-            if not history.empty:
-                st.markdown("**이후 기록**")
-                # Sort history descending so newest is first
-                history_desc = history.sort_values(by='접수일', ascending=False)
-                st.dataframe(history_desc.drop(columns=['uid', 'id']), use_container_width=True, hide_index=True)
-                
-    return total_pages
+        plot_data.append({'날짜': dt, 'SPH': norm_sph, '구분': '일반 단초점 예상 (연 -0.80D)', '유형': '시뮬레이션'})
+        plot_data.append({'날짜': dt, 'SPH': exp_sph, '구분': f'{lens_name} 방어선', '유형': '시뮬레이션'})
+
+    for _, r in chart_real_df.iterrows():
+        plot_data.append({'날짜': r['date_obj'], 'SPH': r[f'{side} SPH'], '구분': '실제 검안기록', '유형': '실제'})
+    
+    df_plot = pd.DataFrame(plot_data)
+    
+    # Y축 0.25 단위 눈금 설정
+    y_min, y_max = df_plot['SPH'].min(), df_plot['SPH'].max()
+    y_ticks = np.arange(np.floor(y_min*4)/4 - 0.25, np.ceil(y_max*4)/4 + 0.5, 0.25)
+
+    color_range = ['#E63946', '#F1948A', '#FFC300'] if side == 'R' else ['#1D3557', '#A9CCE3', '#2ECC71']
+    
+    chart = alt.Chart(df_plot).mark_line(point=True).encode(
+        x=alt.X('날짜:T', axis=alt.Axis(values=timeline, format='%y-%m'), title='검안 타임라인'),
+        y=alt.Y('SPH:Q', 
+                axis=alt.Axis(values=y_ticks.tolist(), format='.2f', grid=True), 
+                scale=alt.Scale(zero=False, reverse=True), 
+                title='굴절력 (SPH)'),
+        color=alt.Color('구분:N', scale=alt.Scale(
+            domain=['실제 검안기록', '일반 단초점 예상 (연 -0.80D)', f'{lens_name} 방어선'],
+            range=color_range
+        ), legend=alt.Legend(orient='top')),
+        strokeDash=alt.condition(
+            "datum.유형 == '실제'",
+            alt.value([0, 0]),
+            alt.value([4, 2])
+        ),
+        tooltip=['날짜', '구분', 'SPH']
+    ).properties(height=350, title=f"{side_name} 시뮬레이션").interactive()
+    
+    return chart
 
 # ==========================================
-# [5. 메인 UI 함수]
+# [6. 메인 UI]
 # ==========================================
 def main():
-    st.title("👁️ 근시관리 페이지")
-    st.markdown("만 17세 이하 고객들의 근시 진행 관리 및 근시 억제 렌즈 착용 현황을 확인합니다.")
+    st.title("👁️ 근시관리 통합 대시보드")
     
     if st.button("🔄 데이터 새로고침"):
         st.cache_data.clear()
         st.rerun()
         
-    st.divider()
-    
-    df = load_data()
-    
-    if df.empty:
-        st.warning("데이터를 불러올 수 없거나 데이터가 없습니다.")
+    df_raw = load_data()
+    if df_raw.empty:
+        st.info("데이터가 없습니다.")
         return
-        
-    df_youth, df_myopia = process_myopia_data(df)
     
-    colA, colB = st.columns([1, 1])
+    df_youth, df_myopia = process_myopia_data(df_raw)
     
-    uid_youth_count = len(df_youth['uid'].unique()) if not df_youth.empty and 'uid' in df_youth.columns else 0
-    uid_myopia_count = len(df_myopia['uid'].unique()) if not df_myopia.empty and 'uid' in df_myopia.columns else 0
-    
-    with colA:
-        st.metric("만 17세 이하 고객 수 (순수 고객 기준)", f"{uid_youth_count} 명")
-    with colB:
-        st.metric("근시 억제 렌즈 착용 수 (순수 고객 기준)", f"{uid_myopia_count} 명")
-        
-    # --- 차트 영역 ---
-    if uid_youth_count > 0:
-        st.subheader("📊 근시 억제 렌즈 사용자 비율 (전체고객대비)")
-        
-        control_count = uid_myopia_count
-        general_count = uid_youth_count - control_count
-        
-        chart_data = pd.DataFrame({
-            "Category": ["근시 억제 렌즈 사용자 (sim)", "일반 렌즈 사용자"],
-            "Count": [control_count, general_count]
-        })
-        
-        donut_chart = alt.Chart(chart_data).mark_arc(innerRadius=50).encode(
-            theta=alt.Theta(field="Count", type="quantitative"),
-            color=alt.Color(field="Category", type="nominal", scale=alt.Scale(domain=["근시 억제 렌즈 사용자 (sim)", "일반 렌즈 사용자"], range=["#1f77b4", "#cccccc"])),
-            tooltip=['Category', 'Count']
-        ).properties(
-            title="만 17세 이하 사용자 비율 (중복 제외)",
-            height=300
-        )
-        
-        st.altair_chart(donut_chart, use_container_width=True)
+    st.columns(2)[0].metric("대상 청소년", f"{len(df_youth['uid'].unique())}명")
+    st.columns(2)[1].metric("근시 억제 렌즈", f"{len(df_myopia['uid'].unique())}명")
     
     st.divider()
     
-    # --- 표 영역 (Pagination 적용된 Table 2 만 표시) ---
-    st.subheader("👓 근시 억제 렌즈 사용자 목록")
+    st.subheader("👓 근시 억제 렌즈 사용자 상세 분석")
     
-    if 'myopia_page' not in st.session_state:
-        st.session_state['myopia_page'] = 1
-        
-    ITEMS_PER_PAGE = 10
-    
-    # Render table and get total pages
-    total_pages = render_grouped_table(df_myopia, page=st.session_state['myopia_page'], items_per_page=ITEMS_PER_PAGE)
-    
-    # Pagination Controls
-    if total_pages > 0:
-        # Adjust session state if it somehow exceeds total pages
-        if st.session_state['myopia_page'] > total_pages:
-            st.session_state['myopia_page'] = total_pages
-            
-        col1, col2, col3 = st.columns([1, 3, 1])
-        with col1:
-            if st.session_state['myopia_page'] > 1:
-                if st.button("◀ 이전 페이지"):
-                    st.session_state['myopia_page'] -= 1
-                    st.rerun()
-        with col2:
-            st.markdown(f"<div style='text-align: center; font-weight: bold;'>Page {st.session_state['myopia_page']} / {total_pages}</div>", unsafe_allow_html=True)
-        with col3:
-            if st.session_state['myopia_page'] < total_pages:
-                if st.button("다음 페이지 ▶"):
-                    st.session_state['myopia_page'] += 1
-                    st.rerun()
-        
+    if not df_myopia.empty:
+        unique_users = []
+        for uid, group in df_myopia.groupby('uid'):
+            group_sorted = group.sort_values('date_obj')
+            earliest = group_sorted.iloc[0]
+            unique_users.append({
+                'uid': uid, '이름': earliest['이름'], '나이': earliest['나이'], 
+                '생년월일': earliest['생년월일'], 'data': group_sorted, '최초': earliest['접수일']
+            })
+        unique_users.sort(key=lambda x: x['최초'], reverse=True)
+
+        # 렌즈 연구 논문 데이터 매핑 (억제율 설정)
+        lens_options = {
+            "에실로 스텔리스트 (억제율 67%)": {"rate": 0.67, "name": "스텔리스트"},
+            "자이스 마이오케어 (억제율 63%)": {"rate": 0.63, "name": "마이오케어"},
+            "호야 마이오스마트 (억제율 60%)": {"rate": 0.60, "name": "마이오스마트"}
+        }
+
+        for user in unique_users:
+            with st.expander(f"👤 {user['이름']} ({user['나이']}세) | 최초방문: {user['최초']} | 전체 기록 {len(user['data'])}건"):
+                
+                # 시뮬레이션 렌즈 선택 UI
+                st.markdown("##### 🔬 시뮬레이션 설정")
+                st.caption("일반 렌즈 착용 시 연간 -0.80D 진행을 가정하고, 각 렌즈의 논문상 억제율을 반영한 그래프입니다.")
+                selected_lens_key = st.radio(
+                    "렌즈 모델 선택:",
+                    list(lens_options.keys()),
+                    key=f"radio_{user['uid']}",
+                    horizontal=True
+                )
+                
+                eff_rate = lens_options[selected_lens_key]["rate"]
+                lens_label = lens_options[selected_lens_key]["name"]
+                
+                st.write("") # 간격
+                
+                # 우안 섹션
+                st.markdown("### 🔴 우안 (Right Eye)")
+                cr1, cr2 = st.columns([2, 3])
+                with cr1:
+                    st.markdown("**[우안 검안 전체 기록]**")
+                    r_df = user['data'].sort_values('date_obj', ascending=False)[['접수일', 'R SPH', 'R CYL', 'R AXI']]
+                    st.dataframe(r_df, hide_index=True, use_container_width=True)
+                with cr2:
+                    st.altair_chart(draw_eye_chart(user['data'], 'R', user['생년월일'], user['나이'], eff_rate, lens_label), use_container_width=True)
+                
+                st.divider()
+                
+                # 좌안 섹션
+                st.markdown("### 🔵 좌안 (Left Eye)")
+                cl1, cl2 = st.columns([2, 3])
+                with cl1:
+                    st.markdown("**[좌안 검안 전체 기록]**")
+                    l_df = user['data'].sort_values('date_obj', ascending=False)[['접수일', 'L SPH', 'L CYL', 'L AXI']]
+                    st.dataframe(l_df, hide_index=True, use_container_width=True)
+                with cl2:
+                    st.altair_chart(draw_eye_chart(user['data'], 'L', user['생년월일'], user['나이'], eff_rate, lens_label), use_container_width=True)
+
     st.divider()
     
-    # --- 근시 증가 그래프 (Future) ---
-    st.subheader("📈 근시 증감 그래프 (추후 업데이트 예정)")
-    st.info("추후 근시 억제 렌즈 이용자들의 데이터를 1년 단위로 추적하여, `left.sph`와 `right.sph`의 변화량을 기록하는 그래프가 이 영역에 추가될 예정입니다.")
-    # Placeholder for future logic
-    # Example placeholder:
-    # df_history = load_historical_data()
-    # plot_myopia_progression(df_history)
+    # 통계 도넛 차트
+    st.subheader("📊 통계 데이터")
+    u_count = len(df_youth['uid'].unique())
+    m_count = len(df_myopia['uid'].unique())
+    if u_count > 0:
+        chart_df = pd.DataFrame({"Cat": ["근시 억제", "일반"], "Val": [m_count, u_count - m_count]})
+        chart_df['Label'] = chart_df.apply(lambda r: f"{r['Cat']} ({round(r['Val']/u_count*100, 1)}%)", axis=1)
+        donut = alt.Chart(chart_df).mark_arc(innerRadius=70).encode(
+            theta="Val:Q", color=alt.Color("Label:N", scale=alt.Scale(range=['#FF6B6B', '#F1F3F5']), legend=alt.Legend(orient="bottom")),
+            tooltip=['Cat', 'Val']
+        ).properties(height=350)
+        st.altair_chart(donut, use_container_width=True)
 
 if __name__ == "__main__":
     main()

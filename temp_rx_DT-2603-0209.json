@@ -1,0 +1,14 @@
+[
+  {
+    "order_id": "DT-2603-0209",
+    "customer_name": "김동현",
+    "lens_info": "['breezm-ps-bp301-1.67-clear', 'nikon-uv-seeuv'] / ['breezm-ps-bp301-1.67-clear', 'nikon-uv-seeuv']",
+    "rx_r": "S:-7.00 / C:-0.50 / A:180 / ADD:+2.00",
+    "rx_l": "S:-7.00 / C:-0.50 / A:15 / ADD:+2.00",
+    "pd_oh_r": "32.5 / 28",
+    "pd_oh_l": "32.5 / 27",
+    "vd": "11.9",
+    "frame": "jay (5)",
+    "frame_specs": "49.2 / 43 / 20.6 / 6 / 6"
+  }
+]

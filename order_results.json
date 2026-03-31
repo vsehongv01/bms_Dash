@@ -1,0 +1,56 @@
+[
+    {
+        "time": "2026-03-17 01:11:45",
+        "product": "GENS NL3 Brown",
+        "status": "오류 발생",
+        "detail": "could not convert string to float: 'None'"
+    },
+    {
+        "time": "2026-03-17 01:11:54",
+        "product": "GENS NL3 Gray",
+        "status": "주문완료",
+        "detail": "1개 품목 담기 성공"
+    },
+    {
+        "time": "2026-03-17 01:12:05",
+        "product": "NL2 ASP (1.56)",
+        "status": "주문완료",
+        "detail": "1개 품목 담기 성공"
+    },
+    {
+        "time": "2026-03-17 01:12:17",
+        "product": "NL3 ASP (1.60)",
+        "status": "주문완료",
+        "detail": "2개 품목 담기 성공"
+    },
+    {
+        "time": "2026-03-17 01:13:51",
+        "product": "GENS NL3 Brown",
+        "status": "주문완료",
+        "detail": "2개 품목"
+    },
+    {
+        "time": "2026-03-17 01:14:03",
+        "product": "GENS NL3 Gray",
+        "status": "주문완료",
+        "detail": "1개 품목"
+    },
+    {
+        "time": "2026-03-17 01:14:14",
+        "product": "NL2 ASP (1.56)",
+        "status": "주문완료",
+        "detail": "1개 품목"
+    },
+    {
+        "time": "2026-03-17 01:14:25",
+        "product": "NL3 ASP (1.60)",
+        "status": "주문완료",
+        "detail": "2개 품목"
+    },
+    {
+        "time": "2026-03-17 23:39:15",
+        "product": "NL3 ASP (1.60)",
+        "status": "주문완료",
+        "detail": "2개 품목"
+    }
+]

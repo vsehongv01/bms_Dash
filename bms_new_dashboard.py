@@ -39,7 +39,7 @@ def load_data():
         supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
         all_data = []
         
-        # 🌟 핵심 1: 무거운 전체 열(*) 대신 대시보드에 표시할 필수 열만 콕 집어서 요청 (속도 수십 배 향상)
+        # 배송메모 제거됨
         COLS = [
             "id", "createdAt", "status", "code", "frameType", "lensType",
             '"statusDetail.lensStaff"', '"statusDetail.frameStaff"', 
@@ -53,7 +53,6 @@ def load_data():
         ]
         cols = ",".join(COLS)
         
-        # 🌟 핵심 2: 1000개씩 나눠서 가져오기 (서버 과부하 원천 차단)
         offset = 0
         page_size = 1000
         loading_text = st.empty()
@@ -74,11 +73,11 @@ def load_data():
             all_data.extend(data)
             
             if len(data) < page_size:
-                break # 가져온 게 1000개 미만이면 마지막 페이지임
+                break 
                 
             offset += page_size
             
-        loading_text.empty() # 완료되면 안내 문구 삭제
+        loading_text.empty() 
         
         return pd.DataFrame(all_data) if all_data else pd.DataFrame()
         
@@ -181,7 +180,7 @@ def process_new_data(df, selected_staff):
         if phones: return ", ".join(phones)
         return c_str
 
-    # 헬퍼 함수 2: 테 정보 파싱 (두 개의 변수로 반환하도록 수정)
+    # 🌟 헬퍼 함수 2: 테 정보 예쁘게 파싱
     def clean_prefix(val):
         if pd.isna(val) or str(val).lower() == 'nan': return ""
         v = str(val).strip()
@@ -196,25 +195,35 @@ def process_new_data(df, selected_staff):
         size = clean_prefix(row.get('frame.size', ''))
         color = clean_prefix(row.get('frame.color', ''))
         front = clean_prefix(row.get('frame.front', ''))
-        temple_color = clean_prefix(row.get('frame.temple_color', ''))
         temple = clean_prefix(row.get('frame.temple', ''))
         
-        if not temple_color and temple: 
-            temple_color = temple
+        # 이름 (크기) 🎨 색상 🦵 다리종류
+        res = ""
+        if front: res += f"👓 {front}"
+        if size: res += f" ({size})"
+        if color: res += f" 🎨 {color}"
+        if temple: res += f" 🦵 {temple}"
+        return res.strip()
 
-        line1 = f"👓 {front}" if front else ""
-        if size: 
-            line1 += f" (Size: {size})" if line1 else f"👓 (Size: {size})"
-            
-        line2_parts = []
-        if color: line2_parts.append(f"Front: {color}")
-        if temple_color: line2_parts.append(f"Temple: {temple_color}")
+    # 🌟 헬퍼 함수 3: 상태(Status) 예쁘게 매핑
+    def beautify_status(status_val):
+        val = str(status_val).strip().lower()
+        if not val or val == 'nan': return ""
         
-        line2 = f"🎨 {' | '.join(line2_parts)}" if line2_parts else ""
-        
-        return line1.strip(), line2.strip()
+        mapping = {
+            'created': '🆕 주문생성',
+            'payment_completed': '💳 결제완료',
+            'production': '⚙️ 생산중',
+            'shipped': '🚚 배송중',
+            'delivered': '✅ 배송완료',
+            'canceled': '❌ 취소됨',
+            'archived': '📁 보관됨',
+            'ready': '📦 준비완료'
+        }
+        # 매핑된 값이 없으면 기본 아이콘과 함께 대문자로 표시
+        return mapping.get(val, f"📌 {status_val.upper()}")
 
-    # 헬퍼 함수 3: 렌즈 정보 파싱
+    # 헬퍼 함수 4: 렌즈 정보 파싱
     def parse_lens_skus(skus_data):
         if pd.isna(skus_data) or str(skus_data).lower() == 'nan' or skus_data == "":
             return ""
@@ -318,8 +327,8 @@ def process_new_data(df, selected_staff):
 
     results = []
     for _, row in my_df.iterrows():
-        # 테 정보 (모델/사이즈와 색상을 분리)
-        frame_model, frame_color = build_frame_info(row)
+        # 테 정보 예쁘게
+        frame_info = build_frame_info(row)
         
         # 렌즈 정보 분리
         l_lens_raw = parse_lens_skus(row.get('lens.left.skus', ''))
@@ -352,7 +361,7 @@ def process_new_data(df, selected_staff):
         f_type = str(row.get('frameType', '')).strip().lower()
         l_type = str(row.get('lensType', '')).strip().lower()
         
-        has_frame_detail = bool(frame_model or frame_color)
+        has_frame_detail = bool(frame_info)
         has_lens_detail = bool(l_lens_str or r_lens_str or has_optometry)
         
         if not has_frame_detail and not has_lens_detail:
@@ -370,12 +379,12 @@ def process_new_data(df, selected_staff):
         results.append({
             'key_id': row['id'],
             '접수일': date_str,
+            '상태': beautify_status(row.get('status', '')), # 상태 매핑 적용
             '주문타입': order_type_str,
             '주문번호': row.get('code', ''),
             '이름': row.get('customer.name', ''),
             '전화번호': parse_contacts(row.get('customer.contacts', '')),
-            '테(모델/사이즈)': frame_model,
-            '테(색상)': frame_color,
+            '테정보': frame_info,
             'L렌즈': l_lens_str,
             'R렌즈': r_lens_str,
             'L도수': l_opts_str,
@@ -491,9 +500,9 @@ def main():
     if 'new_reset_counter' not in st.session_state:
         st.session_state['new_reset_counter'] = 0
 
-    # 컬럼 구조 변경
-    view_cols = ['key_id', '주문타입', '주문번호', '접수일', '이름', '전화번호', 
-                 '테(모델/사이즈)', '테(색상)', 'L렌즈', 'R렌즈', 'L도수', 'R도수']
+    # 컬럼 구조 변경 (배송메모 삭제됨)
+    view_cols = ['key_id', '상태', '주문타입', '주문번호', '접수일', '이름', '전화번호', 
+                 '테정보', 'L렌즈', 'R렌즈', 'L도수', 'R도수']
     final_view = display_df[[c for c in view_cols if c in display_df.columns]].copy()
     final_view.insert(0, "확인", False)
     final_view.insert(3, "팝업", False)
@@ -507,21 +516,21 @@ def main():
         column_config={
             "확인": st.column_config.CheckboxColumn("완료", width="small"),
             "key_id": None,
+            "상태": st.column_config.TextColumn("상태", width="small"),
             "접수일": st.column_config.TextColumn("접수일", width="small"),
             "팝업": st.column_config.CheckboxColumn("BMS 조회", width="small", help="체크 시 자동 조회"),
             "주문타입": st.column_config.TextColumn("주문타입", width="small"),
             "주문번호": st.column_config.TextColumn("주문번호", width="medium"),
             "이름": st.column_config.TextColumn("이름", width="small"),
             "전화번호": st.column_config.TextColumn("전화번호", width="medium"),
-            "테(모델/사이즈)": st.column_config.TextColumn("테(모델/사이즈)", width="medium"),
-            "테(색상)": st.column_config.TextColumn("테(색상)", width="medium"),
+            "테정보": st.column_config.TextColumn("테정보", width="large"),
             "L렌즈": st.column_config.TextColumn("L렌즈", width="medium"),
             "R렌즈": st.column_config.TextColumn("R렌즈", width="medium"),
             "L도수": st.column_config.TextColumn("L도수", width="large"),
             "R도수": st.column_config.TextColumn("R도수", width="large"),
         },
-        column_order=['확인', '주문타입', '주문번호', '접수일', '팝업', '이름', '전화번호', 
-                      '테(모델/사이즈)', '테(색상)', 'L렌즈', 'R렌즈', 'L도수', 'R도수'],
+        column_order=['확인', '상태', '주문타입', '주문번호', '접수일', '팝업', '이름', '전화번호', 
+                      '테정보', 'L렌즈', 'R렌즈', 'L도수', 'R도수'],
         height=750, hide_index=True, width="stretch", 
         key=f"new_table_page_{current_page}_{st.session_state['new_reset_counter']}"
     )

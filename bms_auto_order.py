@@ -43,7 +43,6 @@ def save_to_server(sku_str, custom_name):
     """서버에 매핑 데이터 저장 (Upsert)"""
     try:
         supabase = get_supabase()
-        # RLS가 비활성화된 상태이므로 직접 upsert 가능
         supabase.table(MAPPING_TABLE).upsert({
             "sku_key": sku_str,
             "custom_name": custom_name
@@ -57,16 +56,35 @@ def save_to_server(sku_str, custom_name):
 def load_data(start_date_str, end_date_str):
     try:
         supabase = get_supabase()
-        COLS = ["id", "createdAt", "status", "code", '"customer.name"', '"lens.left.skus"', '"lens.right.skus"',
-                '"optometry.data.optimal.left.sph"', '"optometry.data.optimal.left.cyl"',
-                '"optometry.data.optimal.right.sph"', '"optometry.data.optimal.right.cyl"',
-                '"optometry.data.optimal.dist"', '"optometry.data.optimal.left.add"', '"optometry.data.optimal.right.add"']
+        COLS = [
+            "id", "createdAt", "status", "code", "lensType", '"customer.name"', 
+            '"lens.left.skus"', '"lens.right.skus"',
+            '"optometry.data.optimal.left.sph"', '"optometry.data.optimal.left.cyl"',
+            '"optometry.data.optimal.right.sph"', '"optometry.data.optimal.right.cyl"',
+            '"optometry.data.optimal.dist"', '"optometry.data.optimal.left.add"', '"optometry.data.optimal.right.add"'
+        ]
         start_dt = datetime.strptime(start_date_str, "%Y-%m-%d")
         end_dt = datetime.strptime(end_date_str, "%Y-%m-%d")
         start_utc = (start_dt - timedelta(days=1)).strftime("%Y-%m-%dT00:00:00Z")
         end_utc = (end_dt + timedelta(days=1)).strftime("%Y-%m-%dT23:59:59Z")
-        response = supabase.table(TARGET_TABLE).select(",".join(COLS)).gte("createdAt", start_utc).lte("createdAt", end_utc).execute()
-        return pd.DataFrame(response.data) if response.data else pd.DataFrame()
+        
+        # 💡 1차 필터링: DB 단에서 'none'과 'archived'를 원천 차단
+        response = supabase.table(TARGET_TABLE).select(",".join(COLS))\
+            .gte("createdAt", start_utc).lte("createdAt", end_utc)\
+            .neq("lensType", "none")\
+            .neq("status", "archived")\
+            .execute()
+            
+        df = pd.DataFrame(response.data) if response.data else pd.DataFrame()
+        
+        # 💡 2차 필터링: 파이썬 단에서 한 번 더 강력하게 차단
+        if not df.empty:
+            if 'lensType' in df.columns:
+                df = df[df['lensType'].astype(str).str.lower() != 'none']
+            if 'status' in df.columns:
+                df = df[df['status'].astype(str).str.lower() != 'archived']
+            
+        return df
     except Exception as e:
         st.error(f"데이터 로드 오류: {e}")
         return pd.DataFrame()
@@ -97,6 +115,7 @@ def execute_chemi_order(selected_rows):
             if pd.isna(sku_val) or str(sku_val).strip() in ['', 'nan', 'None']: continue
             try: sku_list = ast.literal_eval(str(sku_val)) if isinstance(sku_val, str) else sku_val
             except: sku_list = [str(sku_val)]
+            
             lens_key = str(sku_list)
             if lens_key not in orders_by_lens: orders_by_lens[lens_key] = {"sku_list": sku_list, "dosu_map": {}}
             parts = str(row.get(dosu, "")).split('/')
@@ -117,7 +136,6 @@ def execute_chemi_order(selected_rows):
                 st.toast(f"저장 성공!", icon='✅')
 
     msg_lines = [f"[케미 여벌 발주 요청] - {datetime.now().strftime('%m/%d %H:%M')}", "--------------------"]
-    # 최신 매핑 데이터로 메시지 생성
     final_mappings = load_all_mappings()
     for l_key, l_data in orders_by_lens.items():
         p_name = get_lens_display_name(l_data["sku_list"], final_mappings)
@@ -128,7 +146,7 @@ def execute_chemi_order(selected_rows):
     st.divider()
     st.code("\n".join(msg_lines), language="text")
 
-# [4. 자이스/니콘 자동 주문 로직 (사장님 원본 합산 로직 유지)]
+# [4. 자이스/니콘 자동 주문 로직]
 def execute_auto_order(selected_rows, brand_name):
     if selected_rows.empty:
         st.warning("항목을 선택해주세요.")
@@ -153,9 +171,8 @@ def execute_auto_order(selected_rows, brand_name):
             dosu_parts = str(row.get(dosu, "")).split('/')
             if len(dosu_parts) >= 2:
                 sph, cyl = dosu_parts[0].strip(), dosu_parts[1].strip()
-                if sph not in ['None', 'nan', '']:  # '0'과 '0.00'을 제거하여 평면 도수도 포함시킴
+                if sph not in ['None', 'nan', '']:  
                     k = (sph, cyl)
-                    
                     if k not in orders_by_lens[lens_key]["orders_map"]:
                         orders_by_lens[lens_key]["orders_map"][k] = {"qty": 0, "names": []}
                     
@@ -178,7 +195,6 @@ def execute_auto_order(selected_rows, brand_name):
         st.warning("합산된 유효 데이터가 없습니다.")
         return
 
-    # 파일명 최종 매칭
     script_name = "zeiss_auto.py" if brand_name == "자이스" else "essilor_auto.py"
     temp_file = "temp_order_zeiss.json" if brand_name == "자이스" else "temp_order.json"
     

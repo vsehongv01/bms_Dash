@@ -2,10 +2,9 @@ import sys
 import time
 import os
 import json
-import asyncio
 from playwright.sync_api import sync_playwright
 
-# [1] 제품구분 2 정밀 매핑 테이블 (기존과 동일)
+# [1] 제품 매핑 테이블
 NIKON_MAPPING = [
     {"keywords": ["nikon-disc-gens", "1.60", "basecolor_gray"], "value": "518SZ112E1", "name": "GENS NL3 Gray"},
     {"keywords": ["nikon-disc-gens", "1.60", "basecolor_brown"], "value": "518SZ212E1", "name": "GENS NL3 Brown"},
@@ -19,122 +18,162 @@ NIKON_MAPPING = [
 ]
 
 def format_data_sph(val):
-    """SPH 값을 data-sph 형식으로 변환 (-3.50 -> -03.50)"""
-    num = float(val)
-    sign = '-' if num < 0 else '+'
-    if num == 0: sign = '-' # 사이트 규칙상 0.00은 -00.00일 확률이 높음
-    return f"{sign}{abs(num):05.2f}"
+    """SPH 변환 (None 입력 시 방어 로직 추가)"""
+    try:
+        if val is None or str(val).lower() == 'none' or str(val).strip() == '':
+            return "+00.00"
+        num = float(val)
+        sign = '-' if num < 0 else '+'
+        if num == 0: sign = '+' 
+        return f"{sign}{abs(num):05.2f}"
+    except ValueError:
+        return "+00.00"
 
-def get_cyl_colnum(val):
-    """사용자가 분석한 CYL -> data-colnum 매핑 규칙"""
-    cyl_val = abs(float(val))
-    # 0.25 단위로 인덱스가 1씩 증가하는 규칙 적용
-    return int(cyl_val / 0.25)
+def format_data_cyl(val):
+    """CYL 변환 (None 입력 시 방어 로직 추가)"""
+    try:
+        if val is None or str(val).lower() == 'none' or str(val).strip() == '':
+            return "-00.00"
+        num = float(val)
+        sign = '+' if num > 0 else '-'
+        if num == 0: sign = '-'
+        return f"{sign}{abs(num):05.2f}"
+    except ValueError:
+        return "-00.00"
+
+def save_status(order_name, status, detail=""):
+    log_file = "order_results.json"
+    results = []
+    if os.path.exists(log_file):
+        with open(log_file, 'r', encoding='utf-8') as f:
+            try: results = json.load(f)
+            except: results = []
+    
+    results.append({
+        "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "product": order_name,
+        "status": status,
+        "detail": detail
+    })
+    
+    with open(log_file, 'w', encoding='utf-8') as f:
+        json.dump(results, f, ensure_ascii=False, indent=4)
 
 def process_single_product(page, data):
-    lens_info = data['lens_info']
-    orders = data['orders']
-    combined = " ".join(lens_info).lower()
+    lens_info = [str(i).strip().lower() for i in data.get('lens_info', [])]
+    orders = data.get('orders', [])
+    combined = " ".join(lens_info)
     
     target = next((m for m in NIKON_MAPPING if all(k in combined for k in m["keywords"])), None)
+    
     if not target:
-        print(f"[SKIP] 매칭 실패: {lens_info}")
+        print(f"[SKIP] 매칭 실패: {combined}")
+        save_status(combined, "매칭 실패", "제품 코드 없음")
         return
 
-    print(f"\n[START] {target['name']} 주문 프로세스 실행")
-    page.goto("https://order.essilor.co.kr/order/order.php?order_type=B", timeout=60000)
+    print(f"\n[START] {target['name']} 프로세스 시작")
     
-    # 옵션 선택 (브랜드 -> 타입 -> 그룹 -> 코팅)
-    page.select_option("#brand_code", value="01")
-    time.sleep(1)
-
-    lens_type = "GENS 비구면" if "nikon-disc-gens" in combined else ("양면비구면" if any(k in combined for k in ['ssp', 'das']) else "비구면")
-    page.select_option("#lens_type", value=lens_type)
-    time.sleep(1.5)
-    page.select_option("#group_code", value=target['value'])
-    time.sleep(1.5)
-
-    is_das = (lens_type == "양면비구면")
-    coating = 'BLUV ECC UV' if 'bluv' in combined else ('SeeCoat Next' if is_das else 'ECC')
-    page.click(f"span:has-text('{coating}')")
-    page.click("#btn_order_detail")
-    time.sleep(3) # 격자 로딩 대기
-
-    # [핵심] 사용자 분석 data-sph & data-colnum 기반 입력
-    print(f"[INFO] {len(orders)}개 품목 입력 시작")
-    for item in orders:
-        sph_attr = format_data_sph(item['sph'])  # 예: -03.50
-        col_num = str(get_cyl_colnum(item['cyl'])) # 예: 2 (CYL -0.50일 때)
+    try:
+        page.goto("https://order.essilor.co.kr/order/order.php?order_type=B", timeout=60000)
+        time.sleep(1.5)
         
-        try:
-            # data-sph와 data-colnum 속성을 동시에 가진 td를 정확히 타겟팅
-            # 예: td[data-sph="-03.50"][data-colnum="2"]
-            selector = f'td[data-sph="{sph_attr}"][data-colnum="{col_num}"] input'
+        page.select_option("#brand_code", value="01")
+        time.sleep(1)
+
+        lens_type = "GENS 비구면" if "nikon-disc-gens" in combined else ("양면비구면" if any(k in combined for k in ['ssp', 'das']) else "비구면")
+        page.select_option("#lens_type", value=lens_type)
+        time.sleep(1)
+
+        page.select_option("#group_code", value=target['value'])
+        print(f" 🗳️ 제품 선택 완료: {target['name']} ({target['value']})")
+        time.sleep(1.5)
+
+        # 코팅 선택 로직
+        is_das = (lens_type == "양면비구면")
+        if 'bluv' in combined:
+            coating = 'BLUV ECCUV' if '1.56' in combined else 'BLUV ECC UV'
+        else:
+            coating = 'SeeCoat Next' if is_das else 'ECC'
+            
+        coating_el = page.locator(f"text='{coating}'").first
+        coating_el.wait_for(state="attached", timeout=5000)
+        coating_el.evaluate("el => el.click()")
+        time.sleep(1)
+
+        page.locator("#btn_order_detail").evaluate("el => el.click()")
+        time.sleep(3) 
+
+        success_count = 0
+        for item in orders:
+            # SPH/CYL 값이 'None'인 경우를 대비해 안전하게 변환
+            sph_val = item.get('sph')
+            cyl_val = item.get('cyl')
+            
+            sph_attr = format_data_sph(sph_val)  
+            cyl_attr = format_data_cyl(cyl_val) 
+            
+            selector = f'td[data-sph="{sph_attr}"][data-cyl="{cyl_attr}"] input'
             target_input = page.locator(selector)
             
             if target_input.count() > 0:
                 target_input.scroll_into_view_if_needed()
-                target_input.fill(str(item['qty']))
-                # 입력 후 blur 처리로 사이트 데이터 갱신 유도
+                target_input.fill(str(item.get('qty', 0)))
                 target_input.evaluate("el => el.blur()")
-                print(f"  ✅ 입력 성공: SPH {item['sph']} / CYL {item['cyl']} (col:{col_num}) -> {item['qty']}개")
+                success_count += 1
+                print(f"  ✅ 입력: {sph_attr}/{cyl_attr} -> {item.get('qty')}개")
             else:
-                # 보조 수단: 만약 속성값이 사이트마다 다를 경우 기존 ID 방식(m0350_m050)으로 시도
-                alt_id = f"{'m' if float(item['sph']) < 0 else 'p'}{int(abs(float(item['sph']))*100):03d}"
-                print(f"  ❌ 입력 실패: 위치를 찾을 수 없음 ({sph_attr}, col:{col_num})")
-        except Exception as e:
-            print(f"  ⚠️ 에러 발생 ({item['sph']}/{item['cyl']}): {e}")
+                print(f"  ❌ 도수 없음: {sph_attr} / {cyl_attr}")
 
-    # 장바구니에 넣기 버튼 클릭
-    page.once("dialog", lambda d: d.accept())
-    page.click("input[value='장바구니에 넣기'].btn_navy")
-    print(f"[DONE] {target['name']} 장바구니 담기 완료")
-    time.sleep(2)
+        # 장바구니 담기
+        if success_count > 0:
+            page.once("dialog", lambda d: d.accept())
+            page.locator("input[value='장바구니에 넣기'].btn_navy").evaluate("el => el.click()")
+            print(f"[DONE] {target['name']} 장바구니 담기 성공")
+            save_status(target['name'], "주문완료", f"{success_count}개 품목")
+        else:
+            print(f"[SKIP] 입력된 수량이 없어 장바구니에 담지 않았습니다.")
+            save_status(target['name'], "주문대기", "입력 수량 없음")
+        
+        time.sleep(2)
+        
+    except Exception as e:
+        print(f"❌ 과정 중 오류 발생: {e}")
+        save_status(target['name'] if target else combined, "오류 발생", str(e))
 
 def main(payload_file):
+    if not os.path.exists(payload_file):
+        print(f"파일을 찾을 수 없습니다: {payload_file}")
+        return
+
     with open(payload_file, 'r', encoding='utf-8') as f:
-        payload_list = json.load(f)
+        try:
+            payload_list = json.load(f)
+        except json.JSONDecodeError:
+            print("JSON 파일 형식이 잘못되었습니다.")
+            return
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
         context = browser.new_context(storage_state="auth.json" if os.path.exists("auth.json") else None)
         page = context.new_page()
 
-        # 로그인 상태 검증 및 자동 로그인
-        print("[INFO] 로그인 상태를 확인합니다...")
-        page.goto("https://order.essilor.co.kr/order/order.php?order_type=B", timeout=60000)
-        time.sleep(2)
-        
-        if "login" in page.url or page.locator('#web_id').count() > 0:
-            print("[INFO] 세션이 만료되었거나 로그인이 필요합니다. 로그인을 진행합니다.")
-            page.goto("https://order.essilor.co.kr/member/login.php")
+        page.goto("https://order.essilor.co.kr/order/order.php?order_type=B")
+        if page.locator('#web_id').count() > 0:
             page.fill('#web_id', "460163")
             page.fill('#web_pwd', "dt460163!")
             page.press('#web_pwd', "Enter")
-            
-            try:
-                page.wait_for_load_state("networkidle", timeout=10000)
-                time.sleep(2)
-            except:
-                pass
-                
-            if "login.php" not in page.url:
-                context.storage_state(path="auth.json")
-                print("[INFO] 로그인 성공! 세션이 저장되었습니다.")
-            else:
-                print("[ERROR] 로그인에 실패했습니다. 처리를 중단합니다.")
-                browser.close()
-                return
+            time.sleep(3)
+            context.storage_state(path="auth.json")
 
         for data in payload_list:
-            try: process_single_product(page, data)
-            except Exception as e: print(f"오류: {e}")
+            process_single_product(page, data)
 
-        print("\n📌 모든 주문 처리가 끝났습니다. 브라우저에서 최종 확인해 주세요.")
+        print("\n📌 모든 작업이 완료되었습니다.")
         page.wait_for_event("close", timeout=0)
 
 if __name__ == "__main__":
     if sys.platform == 'win32':
         import asyncio
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-    if len(sys.argv) > 1: main(sys.argv[1])
+    if len(sys.argv) > 1: 
+        main(sys.argv[1])
