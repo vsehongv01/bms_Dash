@@ -42,8 +42,8 @@ def load_data():
         # 배송메모 제거됨
         COLS = [
             "id", "createdAt", "status", "code", "frameType", "lensType",
-            '"statusDetail.lensStaff"', '"statusDetail.frameStaff"', 
-            '"customer.name"', '"customer.contacts"',
+            '"statusDetail.lensStaff"', '"statusDetail.frameStaff"',
+            '"customer.id"', '"customer.name"', '"customer.contacts"',
             '"frame.size"', '"frame.color"', '"frame.front"', '"frame.temple_color"', '"frame.temple"',
             '"lens.left.skus"', '"lens.right.skus"',
             '"optometry.data.optimal.left.sph"', '"optometry.data.optimal.left.cyl"', '"optometry.data.optimal.left.axi"', '"optometry.data.optimal.left.add"', '"optometry.data.optimal.left.pd"',
@@ -84,6 +84,48 @@ def load_data():
     except Exception as e:
         st.error(f"전체 데이터 로드 중 오류: {e}")
         return pd.DataFrame()
+
+# ==========================================
+# [3-1. 특별관리 DB 함수]
+# ==========================================
+def get_supabase_client():
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return None
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
+
+def load_special_customers():
+    """bms_special_customers 전체 로드 → {customer_id: special_category}"""
+    try:
+        sb = get_supabase_client()
+        if not sb: return {}
+        res = sb.table("bms_special_customers").select("customer_id,customer_name,special_category").execute()
+        return {r['customer_id']: r for r in (res.data or [])}
+    except Exception:
+        return {}
+
+def upsert_special_customer(customer_id, customer_name, category):
+    try:
+        sb = get_supabase_client()
+        if not sb: return False
+        sb.table("bms_special_customers").upsert({
+            "customer_id": customer_id,
+            "customer_name": customer_name,
+            "special_category": category
+        }, on_conflict="customer_id").execute()
+        return True
+    except Exception as e:
+        st.error(f"특별관리 저장 오류: {e}")
+        return False
+
+def remove_special_customer(customer_id):
+    try:
+        sb = get_supabase_client()
+        if not sb: return False
+        sb.table("bms_special_customers").delete().eq("customer_id", customer_id).execute()
+        return True
+    except Exception as e:
+        st.error(f"특별관리 해제 오류: {e}")
+        return False
 
 # ==========================================
 # [4. 데이터 처리 로직 (신규주문)]
@@ -378,8 +420,9 @@ def process_new_data(df, selected_staff):
 
         results.append({
             'key_id': row['id'],
+            'customer_id': str(row.get('customer.id', '')),
             '접수일': date_str,
-            '상태': beautify_status(row.get('status', '')), # 상태 매핑 적용
+            '상태': beautify_status(row.get('status', '')),
             '주문타입': order_type_str,
             '주문번호': row.get('code', ''),
             '이름': row.get('customer.name', ''),
@@ -500,25 +543,35 @@ def main():
     if 'new_reset_counter' not in st.session_state:
         st.session_state['new_reset_counter'] = 0
 
-    # 컬럼 구조 변경 (배송메모 삭제됨)
-    view_cols = ['key_id', '상태', '주문타입', '주문번호', '접수일', '이름', '전화번호', 
+    # 특별관리 현황 로드
+    special_customers = load_special_customers()  # {customer_id: {customer_name, special_category}}
+
+    # 컬럼 구조
+    view_cols = ['key_id', 'customer_id', '상태', '주문타입', '주문번호', '접수일', '이름', '전화번호',
                  '테정보', 'L렌즈', 'R렌즈', 'L도수', 'R도수']
     final_view = display_df[[c for c in view_cols if c in display_df.columns]].copy()
     final_view.insert(0, "확인", False)
     final_view.insert(3, "팝업", False)
+    # 체크박스는 항상 False(액션 트리거), 특별관리 여부는 별도 텍스트 컬럼으로 표시
+    final_view['⭐특별관리'] = False
+    final_view['특별구분'] = final_view['customer_id'].map(
+        lambda x: special_customers[x]['special_category'] if x in special_customers else ""
+    )
 
     start_idx = (current_page - 1) * ITEMS_PER_PAGE
     paged_view = final_view.iloc[start_idx:start_idx + ITEMS_PER_PAGE].copy()
 
-    # 컬럼 크기 재설정
     edited_df = st.data_editor(
         paged_view,
         column_config={
             "확인": st.column_config.CheckboxColumn("완료", width="small"),
             "key_id": None,
+            "customer_id": None,
             "상태": st.column_config.TextColumn("상태", width="small"),
             "접수일": st.column_config.TextColumn("접수일", width="small"),
             "팝업": st.column_config.CheckboxColumn("BMS 조회", width="small", help="체크 시 자동 조회"),
+            "⭐특별관리": st.column_config.CheckboxColumn("⭐특별관리", width="small"),
+            "특별구분": st.column_config.TextColumn("특별구분", width="medium"),
             "주문타입": st.column_config.TextColumn("주문타입", width="small"),
             "주문번호": st.column_config.TextColumn("주문번호", width="medium"),
             "이름": st.column_config.TextColumn("이름", width="small"),
@@ -529,9 +582,9 @@ def main():
             "L도수": st.column_config.TextColumn("L도수", width="large"),
             "R도수": st.column_config.TextColumn("R도수", width="large"),
         },
-        column_order=['확인', '상태', '주문타입', '주문번호', '접수일', '팝업', '이름', '전화번호', 
+        column_order=['확인', '⭐특별관리', '특별구분', '상태', '주문타입', '주문번호', '접수일', '팝업', '이름', '전화번호',
                       '테정보', 'L렌즈', 'R렌즈', 'L도수', 'R도수'],
-        height=750, hide_index=True, width="stretch", 
+        height=750, hide_index=True, width="stretch",
         key=f"new_table_page_{current_page}_{st.session_state['new_reset_counter']}"
     )
 
@@ -573,6 +626,82 @@ def main():
         
         st.session_state['new_reset_counter'] += 1
         rerun_needed = True
+
+    # 3. 특별관리 체크박스 변경 처리 (항상 False에서 시작하므로 True == 새로 체크한 것)
+    newly_checked = edited_df[edited_df['⭐특별관리'] == True]
+
+    if not newly_checked.empty:
+        st.divider()
+        st.subheader("⭐ 특별관리 등록")
+
+        SPECIAL_TYPES = [
+            "1. 전투적 우기기형",
+            "2. 만성 불편 호소형",
+            "3. 무한 트집 및 제품 불만형",
+            "4. 책임 전가 및 뒤집어씌우기형",
+            "5. 기억 왜곡형",
+            "6. 맹목적 의존형",
+            "7. 최고급 지향 및 허세형",
+            "8. 가성비 집착 및 가격 민감형",
+            "9. 생색내기 '사줄게'형",
+            "10. 단순 관망 및 소통 불가형",
+            "11. 동반자 맹신형",
+            "12. 통제 불능 및 막무가내형",
+        ]
+
+        TYPE_DESC = {
+            "1. 전투적 우기기형":
+                "대화를 기싸움으로 받아들이며 고집을 꺾지 않으려는 유형.\n"
+                "💡 대처: '나는 고객님과 같은 편'이라는 인식을 심어주는 것이 핵심. 공통점을 지속 어필하고 동조하여 적대적 분위기를 사전에 허물어야 함.",
+            "2. 만성 불편 호소형":
+                "논리적 납득이 필요한 타입 / 무조건 당장 편안해야 한다는 타입으로 구분됨.\n"
+                "💡 대처: 전자는 맞춤 렌즈의 기술력과 과정을 명확히 설명해 동의 확보, 후자는 적응 과정의 불편 요소를 지속적으로 사전 인지시킴.",
+            "3. 무한 트집 및 제품 불만형":
+                "원하는 바를 얻기 위해 꼬투리를 잡거나 미세한 마감까지 불만을 어필하는 유형.\n"
+                "💡 대처: 목적을 빠르게 파악해 가능하면 해결, 불가능하면 즉시 환불. 품질 불만엔 제조사의 객관적 확답을 받아 전달.",
+            "4. 책임 전가 및 뒤집어씌우기형":
+                "본인 부주의를 안경원 탓으로 돌리며 과도한 보상을 요구하는 유형.\n"
+                "💡 대처: 논쟁을 피하고 최소한의 선에서 타협 후 관계를 빠르게 끊어냄.",
+            "5. 기억 왜곡형":
+                "상담 시 본인이 한 말을 다르게 기억하거나 타 매장 구매를 우기는 유형.\n"
+                "💡 대처: 오해 지점을 상대가 기분 나쁘지 않게 부드럽게 짚어주고, 불가능한 부분은 현실적 설명으로 명확히 선을 그음.",
+            "6. 맹목적 의존형":
+                "안경사 추천에 전적으로 의존하다 만족도 저하 시 모든 클레임을 쏟아내는 유형.\n"
+                "💡 대처: 친절히 유도하되 주관적 만족도·제품 한계 등 '안 되는 부분'은 사전에 확실히 선을 그어 둠.",
+            "7. 최고급 지향 및 허세형":
+                "무조건 좋은 것만 찾으며 기대치와 실망감이 모두 큰 유형.\n"
+                "💡 대처: 최고가 제품을 먼저 보여준 뒤 '고객님께는 이 렌즈가 더 맞습니다'로 합리적 가격대로 유도(다운셀링)하여 신뢰감을 주고 기대치를 낮춤.",
+            "8. 가성비 집착 및 가격 민감형":
+                "사전 조사가 많고 가성비를 극도로 따지며 질문이 많아 고가 제품 유도가 어려운 유형.\n"
+                "💡 대처: '가성비' 단어 사용 금지. 각 제품의 스펙·특징 위주로 고객이 원하는 방향의 렌즈를 정확하고 직관적으로 제시.",
+            "9. 생색내기 '사줄게'형":
+                "선심 쓰듯 구매하거나 멀리서 왔다는 것을 어필해 무리한 할인·서비스를 당연하게 요구하는 유형.\n"
+                "💡 대처: 무리하게 팔려 하지 말고, 응대 중간중간 '조건이 안 맞으시면 다른 곳에 가셔도 된다'는 점을 넌지시 어필해 무리한 요구를 사전에 차단.",
+            "10. 단순 관망 및 소통 불가형":
+                "단순 체험 목적이거나 자신의 생각을 전혀 말하지 않아 상호 소통이 불가한 유형.\n"
+                "💡 대처: 케미가 맞는지 빠르게 파악하고 흥미를 끌 만한 요소를 찾아 반응을 유도하며 신뢰를 쌓아야 환불 없는 구매로 이어짐.",
+            "11. 동반자 맹신형":
+                "가족·지인과 함께 방문하여 본인 주관보다 동반자의 의견에 심하게 휩쓸리는 유형.\n"
+                "💡 대처: 두 사람의 관계를 빠르게 파악하고 실질적 결정권자에게 설명을 집중하여 결론이 나지 않는 상황을 방지.",
+            "12. 통제 불능 및 막무가내형":
+                "만취 상태이거나 감정 통제가 불가해 매장에서 화를 내며 영업을 심각하게 방해하는 유형.\n"
+                "💡 대처: 말수를 최소화하고 철저히 무시. 잘못 인지한 부분만 단호히 짚고, 환불 요구 시 즉각 처리. 심할 경우 경찰 요청 후 시간을 끎.",
+        }
+
+        st.write(f"**{len(newly_checked)}명**을 특별관리로 등록합니다.")
+        for _, row in newly_checked.iterrows():
+            st.markdown(f"- {row['이름']} ({row['주문번호']})")
+        st.markdown("---")
+        category = st.selectbox("고객 유형 선택", SPECIAL_TYPES, key="special_category_select")
+        info = TYPE_DESC.get(category, "")
+        if info:
+            st.caption(info)
+        if st.button("✅ 저장", type="primary", key="special_save_btn"):
+            for _, row in newly_checked.iterrows():
+                upsert_special_customer(row['customer_id'], row['이름'], category)
+            st.success(f"{len(newly_checked)}명이 [{category}]로 등록되었습니다.")
+            st.session_state['new_reset_counter'] += 1  # data_editor 리셋 → 체크 해제
+            rerun_needed = True
 
     if rerun_needed:
         st.rerun()

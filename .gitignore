@@ -17,6 +17,9 @@ auth*.json
 # Data files
 *.xlsx
 *.csv
+temp_*.json
+order_results.json
+test_api.json
 
 # OS
 .DS_Store
@@ -26,3 +29,7 @@ Thumbs.db
 chrome_profile/
 
 pw-browsers/
+
+# Tests
+test_*.py
+test_api*.py

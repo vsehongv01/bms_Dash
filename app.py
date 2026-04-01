@@ -10,6 +10,7 @@ pages = {
     ],
     "고객 관리": [
         st.Page("bms_myopia_management.py", title="근시관리", icon="👁️"),
+        st.Page("bms_dt_special.py", title="DT 특별관리", icon="⭐"),
     ],
     "자동화 시스템": [
         st.Page("bms_auto_order.py", title="여벌렌즈 자동주문", icon="🤖"),

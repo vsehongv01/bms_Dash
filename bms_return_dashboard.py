@@ -53,6 +53,17 @@ def load_return_requests():
     except Exception:
         return pd.DataFrame()
 
+def delete_return_request(order_code):
+    """bms_return_requests에서 해당 주문번호 레코드 삭제 (원상태 복구)"""
+    try:
+        supabase = get_supabase()
+        supabase.table("bms_return_requests").delete().eq("order_code", order_code).execute()
+        return True
+    except Exception as e:
+        st.error(f"삭제 중 오류: {e}")
+        return False
+
+
 def register_return_request(row_data):
     """수동 반품 요청 등록"""
     try:
@@ -79,9 +90,12 @@ def update_request_status(order_code, new_status, row_data=None):
         # 먼저 해당 주문번호의 요청이 있는지 확인
         existing = supabase.table("bms_return_requests").select("order_code").eq("order_code", order_code).execute()
         
+        def _is_completed_status(s):
+            return s == "반품완료" or s.startswith("대체반품으로사용") or s.startswith("대체반품으로주문")
+
         if existing.data and len(existing.data) > 0:
             update_data = {"status": new_status}
-            if new_status == "반품완료":
+            if _is_completed_status(new_status):
                 update_data["returned_at"] = datetime.now(pytz.timezone('Asia/Seoul')).isoformat()
             supabase.table("bms_return_requests").update(update_data).eq("order_code", order_code).execute()
         elif row_data is not None:
@@ -112,7 +126,7 @@ def update_request_status(order_code, new_status, row_data=None):
                 "l_dosu": l_dosu,
                 "status": new_status
             }
-            if new_status == "반품완료":
+            if _is_completed_status(new_status):
                 data["returned_at"] = datetime.now(pytz.timezone('Asia/Seoul')).isoformat()
             supabase.table("bms_return_requests").insert(data).execute()
         return True
@@ -362,21 +376,30 @@ def process_data(df):
             if not matching_as.empty:
                 df_rx.at[idx, '반품상황'] = '⚠️반품필요'
     
-    # ------------------
-    # 수동 등록된 '대체반품대기' 상태 병합
-    # ------------------
-    df_reqs = load_return_requests()
-    if not df_reqs.empty and not df_rx.empty:
-        for _, req in df_reqs.iterrows():
-            code = req['order_code']
-            status = req['status']
-            if code in df_rx['주문번호'].values:
-                icon = "✅" if status == "반품완료" else "📁"
-                df_rx.loc[df_rx['주문번호'] == code, '반품상황'] = f"{icon}{status}"
-                if status == "반품완료" and 'returned_at' in req:
-                    df_rx.loc[df_rx['주문번호'] == code, '반품완료일'] = req['returned_at']
-                
     return df_rx, df_as
+
+
+def merge_return_status(df_rx):
+    """캐시 밖에서 호출: bms_return_requests의 최신 상태를 df_rx에 병합"""
+    if df_rx.empty:
+        return df_rx
+    df_reqs = load_return_requests()
+    if df_reqs.empty:
+        return df_rx
+    for _, req in df_reqs.iterrows():
+        code = req['order_code']
+        status = req['status']
+        if code in df_rx['주문번호'].values:
+            if status == "반품완료":
+                icon = "✅"
+            elif status == "대체반품대기":
+                icon = "📁"
+            else:
+                icon = "🔄"
+            df_rx.loc[df_rx['주문번호'] == code, '반품상황'] = f"{icon}{status}"
+            if status == "반품완료" and 'returned_at' in req:
+                df_rx.loc[df_rx['주문번호'] == code, '반품완료일'] = req['returned_at']
+    return df_rx
 
 # ==========================================
 # [7. 대체 반품 찾기 (매칭)]
@@ -436,6 +459,7 @@ def main():
         return
         
     df_rx, df_as = process_data(df_raw)
+    df_rx = merge_return_status(df_rx)
     df_rx = find_alt_returns(df_rx)
     
     if df_rx.empty:
@@ -508,30 +532,41 @@ def main():
         )
         
         selected_rows = edited_df[edited_df['선택'] == True]
-        
+
+        # 탭2로 자동 이동 (대체반품대기 등록 후)
+        if st.session_state.get('switch_to_tab2'):
+            st.session_state['switch_to_tab2'] = False
+            st.markdown("""<script>
+                (function() {
+                    var tabs = window.parent.document.querySelectorAll('[data-baseweb="tab"]');
+                    if (tabs && tabs.length > 1) { tabs[1].click(); }
+                })();
+            </script>""", unsafe_allow_html=True)
+
         # 버튼들 가로 배치
-        col_d1, col_d2 = st.columns([2, 3])
+        col_d1, col_d2 = st.columns([1, 1])
         with col_d1:
-            csv = selected_rows.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig') if not selected_rows.empty else b""
-            st.download_button(
-                label="💾 선택 항목 양식 다운로드(CSV)",
-                data=csv,
-                file_name=f"rx_return_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime='text/csv',
-                key="dl_btn",
-                use_container_width=True,
-                disabled=selected_rows.empty
-            )
+            btn_wait_label = f"📁 선택한 {len(selected_rows)}건 대체반품대기 등록" if not selected_rows.empty else "📁 대체반품대기 등록"
+            if st.button(btn_wait_label, use_container_width=True, disabled=selected_rows.empty):
+                success_count = 0
+                for _, row in selected_rows.iterrows():
+                    full_row = df_rx[df_rx['주문번호'] == row['주문번호']].iloc[0]
+                    if update_request_status(row['주문번호'], "대체반품대기", full_row):
+                        success_count += 1
+                if success_count > 0:
+                    st.success(f"{success_count}건이 대체반품대기로 등록되었습니다.")
+                    st.session_state['switch_to_tab2'] = True
+                    time.sleep(1)
+                    st.rerun()
         with col_d2:
-            btn_label = f"✅ 선택한 {len(selected_rows)}건 '반품완료'로 일괄 등록" if not selected_rows.empty else "✅ 선택 항목 반품완료로 일괄 등록"
+            btn_label = f"✅ 선택한 {len(selected_rows)}건 반품완료 등록" if not selected_rows.empty else "✅ 반품완료 등록"
             if st.button(btn_label, type="primary", use_container_width=True, disabled=selected_rows.empty):
                 success_count = 0
                 for _, row in selected_rows.iterrows():
-                    # 실제 df_rx에서 전체 데이터를 가져와야 함 (상태 업데이트용)
                     full_row = df_rx[df_rx['주문번호'] == row['주문번호']].iloc[0]
                     if update_request_status(row['주문번호'], "반품완료", full_row):
                         success_count += 1
-                
+
                 if success_count > 0:
                     st.success(f"{success_count}건의 주문이 '반품완료'로 등록되었습니다.")
                     time.sleep(1)
@@ -574,7 +609,24 @@ def main():
                 if alt_codes:
                     st.markdown(f"**🔸 매칭된 대체 주문 (총 {len(alt_codes)}건)**")
                     alt_df = df_rx[df_rx['주문번호'].isin(alt_codes)]
-                    st.dataframe(alt_df[['주문번호', '고객명', '렌즈정보', 'R도수', 'L도수', '주문일', '반품기한', '반품상황']], hide_index=True)
+                    for _, alt_row in alt_df.iterrows():
+                        col_alt_info, col_alt_btn = st.columns([8, 2])
+                        with col_alt_info:
+                            st.dataframe(
+                                pd.DataFrame([alt_row])[['주문번호', '고객명', '렌즈정보', 'R도수', 'L도수', '주문일', '반품기한', '반품상황']],
+                                hide_index=True,
+                                use_container_width=True
+                            )
+                        with col_alt_btn:
+                            btn_key = f"alt_return_{alt_row['주문번호']}"
+                            if st.button("🔄 대체반품하기", key=btn_key, use_container_width=True, type="primary"):
+                                alt_status = f"대체반품으로사용({sel_code} {tgt_row['고객명']})"
+                                origin_status = f"대체반품으로주문({alt_row['주문번호']} {alt_row['고객명']})"
+                                update_request_status(alt_row['주문번호'], alt_status, alt_row)
+                                update_request_status(sel_code, origin_status, tgt_row)
+                                st.success(f"완료: [{alt_row['주문번호']}] → 대체반품으로 사용 처리됐습니다.")
+                                time.sleep(1)
+                                st.rerun()
                 else:
                     st.info("매칭된 대체 반품 주문이 없습니다.")
                     
@@ -591,47 +643,131 @@ def main():
     with tab2:
         st.subheader("⏳ 직접 등록된 대체 반품 대기 목록")
         df_reqs_all = load_return_requests()
-        
+
         if df_reqs_all.empty:
             st.info("등록된 대체 반품 요청이 없습니다.")
         else:
-            # 대기 상태만 필터링
             df_reqs_active = df_reqs_all[df_reqs_all['status'] == "대체반품대기"].copy()
-            
+
             if df_reqs_active.empty:
                 st.info("대기 중인 반품 요청이 없습니다.")
             else:
+                # df_rx의 대체반주문 컬럼 병합
+                df_reqs_active = df_reqs_active.merge(
+                    df_rx[['주문번호', '대체반주문(유사건)', '반품기한', '반품상황']],
+                    left_on='order_code', right_on='주문번호', how='left'
+                ).drop(columns=['주문번호'])
+
                 req_search = st.text_input("🔍 대기 목록 검색 (고객명/주문번호)", "", key="search_req")
                 if req_search:
                     df_reqs_active = df_reqs_active[
-                        df_reqs_active['customer_name'].str.contains(req_search, case=False, na=False) | 
+                        df_reqs_active['customer_name'].str.contains(req_search, case=False, na=False) |
                         df_reqs_active['order_code'].str.contains(req_search, case=False, na=False)
                     ]
 
-                event = st.data_editor(
-                    df_reqs_active[['order_code', 'customer_name', 'lens_info', 'r_dosu', 'l_dosu', 'status', 'created_at']],
+                df_reqs_active.insert(0, '선택', False)
+
+                edited_active = st.data_editor(
+                    df_reqs_active[['선택', 'order_code', 'customer_name', 'lens_info', 'r_dosu', 'l_dosu', '반품기한', '반품상황', '대체반주문(유사건)']],
                     column_config={
-                        "order_code": "주문번호",
-                        "customer_name": "고객명",
-                        "lens_info": "렌즈정보",
-                        "status": st.column_config.SelectboxColumn(
-                            "상태",
-                            options=["대체반품대기", "반품완료"],
-                            required=True
-                        ),
-                        "created_at": st.column_config.DatetimeColumn("등록일시")
+                        "선택": st.column_config.CheckboxColumn("선택", width="small", default=False),
+                        "order_code": st.column_config.TextColumn("주문번호", width="medium"),
+                        "customer_name": st.column_config.TextColumn("고객명", width="small"),
+                        "lens_info": st.column_config.TextColumn("렌즈정보", width="medium"),
+                        "r_dosu": st.column_config.TextColumn("R도수", width="medium"),
+                        "l_dosu": st.column_config.TextColumn("L도수", width="medium"),
+                        "반품기한": st.column_config.TextColumn("반품기한", width="small"),
+                        "반품상황": st.column_config.TextColumn("반품상황", width="small"),
+                        "대체반주문(유사건)": st.column_config.TextColumn("대체 반품", width="medium"),
                     },
                     use_container_width=True,
                     hide_index=True,
                     key="req_editor"
                 )
 
-                if st.button("💾 변경 사항 저장", key="save_req_status_final"):
-                    for _, r in event.iterrows():
-                        update_request_status(r['order_code'], r['status'])
-                    st.success("데이터베이스에 반영되었습니다.")
-                    time.sleep(1)
-                    st.rerun()
+                selected_active = edited_active[edited_active['선택'] == True]
+
+                col_save, col_done = st.columns([1, 1])
+                with col_save:
+                    if st.button("💾 변경 사항 저장", key="save_req_status_final", use_container_width=True):
+                        for _, r in edited_active.iterrows():
+                            update_request_status(r['order_code'], "대체반품대기")
+                        st.success("데이터베이스에 반영되었습니다.")
+                        time.sleep(1)
+                        st.rerun()
+                with col_done:
+                    btn_done_label = f"✅ 선택한 {len(selected_active)}건 반품완료 등록" if not selected_active.empty else "✅ 반품완료 등록"
+                    if st.button(btn_done_label, type="primary", use_container_width=True, disabled=selected_active.empty, key="tab2_done_btn"):
+                        for _, r in selected_active.iterrows():
+                            full_row = df_rx[df_rx['주문번호'] == r['order_code']]
+                            row_data = full_row.iloc[0] if not full_row.empty else None
+                            update_request_status(r['order_code'], "반품완료", row_data)
+                        st.success(f"{len(selected_active)}건이 반품완료로 등록되었습니다.")
+                        time.sleep(1)
+                        st.rerun()
+
+                st.divider()
+                st.subheader("🔍 상세 조회 및 대체 반품 비교")
+
+                if len(selected_active) == 1:
+                    sel2_code = selected_active.iloc[0]['order_code']
+                    raw_target2 = df_rx[df_rx['주문번호'] == sel2_code]
+
+                    if not raw_target2.empty:
+                        tgt2_row = raw_target2.iloc[0]
+                        st.markdown(f"**🔹 선택된 원 주문: {sel2_code} ({tgt2_row['고객명']})**")
+
+                        col_info2, col_reg2 = st.columns([8, 2])
+                        with col_info2:
+                            st.dataframe(pd.DataFrame([tgt2_row])[['주문번호', '고객명', '렌즈정보', 'R도수', 'L도수', '주문일', '반품기한', '반품상황']], hide_index=True)
+
+                        alt_str2 = str(tgt2_row['대체반주문(유사건)'])
+                        alt_codes2 = re.findall(r'([A-Za-z0-9-]+)\s*\(', alt_str2)
+
+                        with col_reg2:
+                            is_already2 = "📁대체반품대기" in str(tgt2_row['반품상황'])
+                            if not alt_codes2:
+                                if st.button("➕ 대체반품필요 등록", disabled=is_already2, use_container_width=True, type="primary", key="tab2_reg_btn"):
+                                    success, msg = register_return_request(tgt2_row)
+                                    if success:
+                                        st.success(msg)
+                                        st.rerun()
+                                    else:
+                                        st.error(msg)
+                            elif is_already2:
+                                st.info("이미 등록된 건입니다.")
+
+                        if alt_codes2:
+                            st.markdown(f"**🔸 매칭된 대체 주문 (총 {len(alt_codes2)}건)**")
+                            alt_df2 = df_rx[df_rx['주문번호'].isin(alt_codes2)]
+                            for _, alt2_row in alt_df2.iterrows():
+                                col_a2, col_b2 = st.columns([8, 2])
+                                with col_a2:
+                                    st.dataframe(
+                                        pd.DataFrame([alt2_row])[['주문번호', '고객명', '렌즈정보', 'R도수', 'L도수', '주문일', '반품기한', '반품상황']],
+                                        hide_index=True, use_container_width=True
+                                    )
+                                with col_b2:
+                                    if st.button("🔄 대체반품하기", key=f"tab2_alt_{alt2_row['주문번호']}", use_container_width=True, type="primary"):
+                                        update_request_status(alt2_row['주문번호'], f"대체반품으로사용({sel2_code} {tgt2_row['고객명']})", alt2_row)
+                                        update_request_status(sel2_code, f"대체반품으로주문({alt2_row['주문번호']} {alt2_row['고객명']})", tgt2_row)
+                                        st.success(f"완료: [{alt2_row['주문번호']}] → 대체반품으로 사용 처리됐습니다.")
+                                        time.sleep(1)
+                                        st.rerun()
+                        else:
+                            st.info("매칭된 대체 반품 주문이 없습니다.")
+
+                        as_match2 = df_as[(df_as['customer.id'].astype(str) == str(tgt2_row['_cid'])) | (df_as['customer.name'] == tgt2_row['고객명'])]
+                        if not as_match2.empty:
+                            st.success(f"📌 이 고객의 하위 'AS' 교환 이력이 {len(as_match2)}건 존재합니다.")
+                            st.dataframe(as_match2[['code', 'createdAt']], hide_index=True)
+                    else:
+                        st.info("전체 RX 목록에서 해당 주문을 찾을 수 없습니다.")
+
+                elif len(selected_active) > 1:
+                    st.info("상세 비교를 보려면 1개의 주문만 선택해 주세요.")
+                else:
+                    st.info("표에서 주문을 선택하면 상세 비교 정보가 여기에 나타납니다.")
 
     with tab3:
         st.subheader("✅ 반품 완료 목록")
@@ -640,34 +776,57 @@ def main():
         if df_reqs_all.empty:
             st.info("완료된 반품 내역이 없습니다.")
         else:
-            # 완료 상태만 필터링
-            df_reqs_done = df_reqs_all[df_reqs_all['status'] == "반품완료"].copy()
-            
+            # 완료 관련 상태 필터링 (반품완료 + 대체반품으로사용/주문)
+            done_mask = (
+                (df_reqs_all['status'] == "반품완료") |
+                df_reqs_all['status'].str.startswith("대체반품으로사용", na=False) |
+                df_reqs_all['status'].str.startswith("대체반품으로주문", na=False)
+            )
+            df_reqs_done = df_reqs_all[done_mask].copy()
+
             if df_reqs_done.empty:
                 st.info("반품 완료된 내역이 아직 없습니다.")
             else:
-                # 반품완료일 기준 내림차순 정렬
+                # 날짜 기준 내림차순 정렬
                 if 'returned_at' in df_reqs_done.columns:
                     df_reqs_done = df_reqs_done.sort_values(by='returned_at', ascending=False)
-                
+
                 done_search = st.text_input("🔍 완료 목록 검색 (고객명/주문번호)", "", key="search_done")
                 if done_search:
                     df_reqs_done = df_reqs_done[
-                        df_reqs_done['customer_name'].str.contains(done_search, case=False, na=False) | 
+                        df_reqs_done['customer_name'].str.contains(done_search, case=False, na=False) |
                         df_reqs_done['order_code'].str.contains(done_search, case=False, na=False)
                     ]
 
-                st.dataframe(
-                    df_reqs_done[['order_code', 'customer_name', 'lens_info', 'r_dosu', 'l_dosu', 'returned_at']],
+                df_reqs_done.insert(0, '선택', False)
+
+                edited_done = st.data_editor(
+                    df_reqs_done[['선택', 'order_code', 'customer_name', 'lens_info', 'status', 'returned_at']],
                     column_config={
-                        "order_code": "주문번호",
-                        "customer_name": "고객명",
-                        "lens_info": "렌즈정보",
-                        "returned_at": st.column_config.DatetimeColumn("반품완료일")
+                        "선택": st.column_config.CheckboxColumn("선택", width="small", default=False),
+                        "order_code": st.column_config.TextColumn("주문번호", width="medium"),
+                        "customer_name": st.column_config.TextColumn("고객명", width="small"),
+                        "lens_info": st.column_config.TextColumn("렌즈정보", width="medium"),
+                        "status": st.column_config.TextColumn("상태", width="large"),
+                        "returned_at": st.column_config.DatetimeColumn("처리일시", width="medium"),
                     },
                     use_container_width=True,
-                    hide_index=True
+                    hide_index=True,
+                    key="done_editor"
                 )
+
+                selected_done = edited_done[edited_done['선택'] == True]
+                btn_revert_label = f"↩️ 선택한 {len(selected_done)}건 원상태로 되돌리기" if not selected_done.empty else "↩️ 원상태로 되돌리기"
+                if st.button(btn_revert_label, disabled=selected_done.empty, use_container_width=True):
+                    for _, done_row in selected_done.iterrows():
+                        status_val = str(done_row['status'])
+                        paired_match = re.match(r'대체반품으로(?:사용|주문)\((\S+)', status_val)
+                        if paired_match:
+                            delete_return_request(paired_match.group(1))
+                        delete_return_request(done_row['order_code'])
+                    st.success(f"{len(selected_done)}건을 원상태로 복구했습니다.")
+                    time.sleep(1)
+                    st.rerun()
 
 if __name__ == "__main__":
     main()
