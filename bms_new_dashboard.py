@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import altair as alt
 import os
 from dotenv import load_dotenv
 from supabase import create_client, Client

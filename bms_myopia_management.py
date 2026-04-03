@@ -233,6 +233,9 @@ def sph_delta_label(data, side):
 def main():
     st.title("👁️ 근시관리 통합 대시보드")
 
+    if 'care_filter' not in st.session_state:
+        st.session_state.care_filter = None
+
     col_refresh, col_search, col_lens = st.columns([1, 3, 4])
     with col_refresh:
         if st.button("🔄 새로고침"):
@@ -297,11 +300,138 @@ def main():
         cnt_warn   = sum(1 for u in unique_users if u['care_status'] == "🔴 이탈주의")
         if cnt_good or cnt_mid or cnt_effect or cnt_warn:
             st.markdown("#### 📋 관리 알림 현황")
-            a1, a2, a3, a4 = st.columns(4)
-            a1.metric("🟢 눈덜나빠지는중", f"{cnt_good}명",  help="마지막 custom 주문 1~3개월 경과")
-            a2.metric("🟡 중간체크필요",   f"{cnt_mid}명",   help="마지막 custom 주문 4~6개월 경과")
-            a3.metric("🟠 효과체크필요",   f"{cnt_effect}명",help="마지막 custom 주문 7~12개월 경과")
-            a4.metric("🔴 이탈주의",       f"{cnt_warn}명",  help="마지막 custom 주문 13개월 이상 경과")
+            a1, a2, a3, a4, a5 = st.columns(5)
+
+            def _btn_type(status):
+                return "primary" if st.session_state.care_filter == status else "secondary"
+
+            def _toggle(status):
+                st.session_state.care_filter = None if st.session_state.care_filter == status else status
+
+            with a1:
+                if st.button(f"🟢 눈덜나빠지는중\n{cnt_good}명", use_container_width=True,
+                             key="btn_good", type=_btn_type("🟢 눈덜나빠지는중"),
+                             help="마지막 custom 주문 1~3개월 경과"):
+                    _toggle("🟢 눈덜나빠지는중")
+                    st.rerun()
+            with a2:
+                if st.button(f"🟡 중간체크필요\n{cnt_mid}명", use_container_width=True,
+                             key="btn_mid", type=_btn_type("🟡 중간체크필요"),
+                             help="마지막 custom 주문 4~6개월 경과"):
+                    _toggle("🟡 중간체크필요")
+                    st.rerun()
+            with a3:
+                if st.button(f"🟠 효과체크필요\n{cnt_effect}명", use_container_width=True,
+                             key="btn_effect", type=_btn_type("🟠 효과체크필요"),
+                             help="마지막 custom 주문 7~12개월 경과"):
+                    _toggle("🟠 효과체크필요")
+                    st.rerun()
+            with a4:
+                if st.button(f"🔴 이탈주의\n{cnt_warn}명", use_container_width=True,
+                             key="btn_warn", type=_btn_type("🔴 이탈주의"),
+                             help="마지막 custom 주문 13개월 이상 경과"):
+                    _toggle("🔴 이탈주의")
+                    st.rerun()
+            with a5:
+                if st.button("전체 보기", use_container_width=True, key="btn_clear",
+                             disabled=st.session_state.care_filter is None):
+                    st.session_state.care_filter = None
+                    st.rerun()
+
+            if st.session_state.care_filter:
+                st.info(f"**{st.session_state.care_filter}** 필터 적용 중")
+
+            # ── 관리 알림 현황 차트 3개 ──
+            ch1, ch2, ch3 = st.columns(3)
+
+            # 차트1: 청소년 중 근시억제 vs 일반 비율 (기존 통계)
+            with ch1:
+                st.markdown("**📊 청소년 렌즈 비율**")
+                u_cnt = len(df_youth['uid'].unique())
+                m_cnt = len(df_myopia['uid'].unique()) if not df_myopia.empty else 0
+                if u_cnt > 0:
+                    cdf = pd.DataFrame({
+                        "Cat": ["근시 억제", "일반"],
+                        "Val": [m_cnt, u_cnt - m_cnt]
+                    })
+                    cdf['Label'] = cdf.apply(
+                        lambda r: f"{r['Cat']} ({round(r['Val']/u_cnt*100,1)}%)", axis=1
+                    )
+                    donut1 = alt.Chart(cdf).mark_arc(innerRadius=55).encode(
+                        theta="Val:Q",
+                        color=alt.Color("Label:N",
+                            scale=alt.Scale(range=['#FF6B6B', '#E8E8E8']),
+                            legend=alt.Legend(orient="bottom")),
+                        tooltip=['Cat', 'Val']
+                    ).properties(height=230)
+                    st.altair_chart(donut1, use_container_width=True)
+
+            # 차트2: 관리 알림 상태 분포
+            with ch2:
+                st.markdown("**📋 관리 상태 분포**")
+                _sdata = [
+                    {"상태": "🟢 눈덜나빠지는중", "인원": cnt_good},
+                    {"상태": "🟡 중간체크필요",   "인원": cnt_mid},
+                    {"상태": "🟠 효과체크필요",   "인원": cnt_effect},
+                    {"상태": "🔴 이탈주의",       "인원": cnt_warn},
+                ]
+                sdf = pd.DataFrame([s for s in _sdata if s["인원"] > 0])
+                if not sdf.empty:
+                    donut2 = alt.Chart(sdf).mark_arc(innerRadius=55).encode(
+                        theta="인원:Q",
+                        color=alt.Color("상태:N", scale=alt.Scale(
+                            domain=["🟢 눈덜나빠지는중", "🟡 중간체크필요", "🟠 효과체크필요", "🔴 이탈주의"],
+                            range=["#2ECC71", "#F1C40F", "#E67E22", "#E74C3C"]
+                        ), legend=alt.Legend(orient="bottom")),
+                        tooltip=["상태", "인원"]
+                    ).properties(height=230)
+                    st.altair_chart(donut2, use_container_width=True)
+
+            # 차트3: 연간 SPH 변화 분포 (억제렌즈 대상자 기준)
+            with ch3:
+                st.markdown("**📉 연간 근시 진행 분포**")
+                _prog_cats = []
+                for _u in unique_users:
+                    _d = _u['data'].sort_values('date_obj')
+                    if len(_d) < 2:
+                        _prog_cats.append("데이터 부족")
+                        continue
+                    _years = (_d.iloc[-1]['date_obj'] - _d.iloc[0]['date_obj']).days / 365.25
+                    if _years < 0.25:
+                        _prog_cats.append("데이터 부족")
+                        continue
+                    # 양안 중 더 진행한(더 음수인) 쪽 기준
+                    _r_delta = _d.iloc[-1]['R SPH'] - _d.iloc[0]['R SPH']
+                    _l_delta = _d.iloc[-1]['L SPH'] - _d.iloc[0]['L SPH']
+                    _annual = min(_r_delta, _l_delta) / _years
+                    if _annual > 0:
+                        _prog_cats.append("호전/유지 (>0D/년)")
+                    elif _annual >= -0.50:
+                        _prog_cats.append("양호 (0~-0.50D/년)")
+                    else:
+                        _prog_cats.append("진행 (<-0.50D/년)")
+
+                _prog_series = pd.Series(_prog_cats)
+                _prog_df = _prog_series.value_counts().reset_index()
+                _prog_df.columns = ["구분", "인원"]
+                _total = int(_prog_df[_prog_df["구분"] != "데이터 부족"]["인원"].sum())
+                _prog_df["비율"] = _prog_df["인원"].apply(
+                    lambda v: f"{round(v/_total*100,1)}%" if _total > 0 else "-"
+                )
+                _color_domain = ["양호 (0~-0.50D/년)", "진행 (<-0.50D/년)", "호전/유지 (>0D/년)", "데이터 부족"]
+                _color_range  = ["#2ECC71", "#E74C3C", "#3498DB", "#BDC3C7"]
+                donut3 = alt.Chart(_prog_df).mark_arc(innerRadius=55).encode(
+                    theta="인원:Q",
+                    color=alt.Color("구분:N", scale=alt.Scale(
+                        domain=_color_domain, range=_color_range),
+                        legend=alt.Legend(orient="bottom")),
+                    tooltip=["구분", "인원", "비율"]
+                ).properties(height=230)
+                st.altair_chart(donut3, use_container_width=True)
+                if _total > 0:
+                    _good_n = int(_prog_series[_prog_series == "양호 (0~-0.50D/년)"].count())
+                    st.caption(f"양호(-0.50~0D/년) 비율: **{round(_good_n/_total*100,1)}%** ({_good_n}/{_total}명)")
+
             st.divider()
 
         # 렌즈 선택 — 페이지 상단 1회
@@ -326,6 +456,11 @@ def main():
         if search:
             active_users   = [u for u in active_users   if search in u['이름']]
             inactive_users = [u for u in inactive_users if search in u['이름']]
+
+        # 관리 알림 필터
+        if st.session_state.care_filter:
+            active_users   = [u for u in active_users   if u['care_status'] == st.session_state.care_filter]
+            inactive_users = [u for u in inactive_users if u['care_status'] == st.session_state.care_filter]
 
         # ── 지속 관리 중
         st.subheader(f"👓 지속 관리 중 ({len(active_users)}명)")
@@ -418,24 +553,6 @@ def main():
                     with col_l:
                         st.altair_chart(chart_l, use_container_width=True)
 
-    st.divider()
-
-    # 통계 도넛
-    st.subheader("📊 통계")
-    u_count = len(df_youth['uid'].unique())
-    m_count = len(df_myopia['uid'].unique()) if not df_myopia.empty else 0
-    if u_count > 0:
-        chart_df = pd.DataFrame({"Cat": ["근시 억제", "일반"], "Val": [m_count, u_count - m_count]})
-        chart_df['Label'] = chart_df.apply(
-            lambda r: f"{r['Cat']} ({round(r['Val']/u_count*100,1)}%)", axis=1
-        )
-        donut = alt.Chart(chart_df).mark_arc(innerRadius=70).encode(
-            theta="Val:Q",
-            color=alt.Color("Label:N", scale=alt.Scale(range=['#FF6B6B', '#F1F3F5']),
-                            legend=alt.Legend(orient="bottom")),
-            tooltip=['Cat', 'Val']
-        ).properties(height=300)
-        st.altair_chart(donut, use_container_width=True)
 
 if __name__ == "__main__":
     main()

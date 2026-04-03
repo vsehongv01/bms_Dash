@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rm -f check_as.py check_as2.py check_as_output.txt check_bug_DT.py debug_as_logic.py debug_as_v2.py debug_final.py test_compare.py test_specific.py test_api.py test_api2.py test_api3.py test_api4.py test_contacts.py)",
+      "Bash(rm -rf test/)",
+      "Bash(rm -f bms_automation.py login_essilor.py essilor_auto.py zeiss_auto.py breezm_auto.py)",
+      "Bash(cd:*)",
+      "Bash(python app.py)"
+    ]
+  }
+}
